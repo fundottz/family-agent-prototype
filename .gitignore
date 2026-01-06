@@ -11,6 +11,7 @@ venv/
 env/
 ENV/
 langflow-env/
+test-env/
 
 # IDE
 .vscode/
