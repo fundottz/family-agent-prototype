@@ -1,13 +1,22 @@
 """Точка входа для семейного ИИ-планировщика."""
 
 import os
+import logging
 from dotenv import load_dotenv
 from agno.agent import Agent
 from agno.models.deepseek import DeepSeek
 from agno.db.sqlite import SqliteDb
 from telegram_bot import run_bot
+from core_logic.database import init_database
 
 load_dotenv()
+
+# Настройка логирования
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
 
 
 def create_family_planner_agent() -> Agent:
@@ -21,6 +30,13 @@ def create_family_planner_agent() -> Agent:
     if not deepseek_api_key:
         raise ValueError("DEEPSEEK_API_KEY must be set in .env file")
     
+    # Используем SQLite для разработки
+    db_file = os.getenv("DB_FILE", "family_calendar.db")
+    logger.info(f"Используется SQLite база данных: {db_file}")
+    
+    # Инициализируем базу данных (создаем таблицы, если их нет)
+    init_database(db_file)
+
     # Создаем агента с DeepSeek моделью
     # Используем специальный класс DeepSeek вместо OpenAIChat
     agent = Agent(
@@ -48,8 +64,8 @@ def create_family_planner_agent() -> Agent:
 ❌ Использование технических терминов""",
         # На Итерации 1: без тулов, только базовый диалог
         tools=[],
-        # Используем SQLite для хранения истории (позже перейдем на Supabase)
-        db=SqliteDb(db_file="family_calendar.db"),
+        # Используем SQLite для хранения истории диалогов
+        db=SqliteDb(db_file=db_file),
         add_history_to_context=True,
         markdown=True,
     )
@@ -59,16 +75,32 @@ def create_family_planner_agent() -> Agent:
 
 def main():
     """Главная функция запуска бота."""
+    logger.info("🚀 Запуск семейного ИИ-планировщика...")
     print("🚀 Запуск семейного ИИ-планировщика...")
     
-    # Создаем агента
-    agent = create_family_planner_agent()
-    print("✅ Агент создан")
-    
-    # Запускаем Telegram бота
-    # run_bot использует application.run_polling(), который сам управляет event loop
-    print("📱 Запуск Telegram бота...")
-    run_bot(agent)
+    try:
+        # Создаем агента
+        logger.info("Создание агента...")
+        agent = create_family_planner_agent()
+        logger.info("✅ Агент создан")
+        print("✅ Агент создан")
+        
+        # Запускаем Telegram бота
+        # run_bot использует application.run_polling(), который сам управляет event loop
+        logger.info("📱 Запуск Telegram бота...")
+        print("📱 Запуск Telegram бота...")
+        run_bot(agent)
+    except KeyboardInterrupt:
+        logger.info("Получен сигнал остановки")
+        print("\n🛑 Остановка бота...")
+    except ValueError as e:
+        logger.error(f"Ошибка конфигурации: {e}")
+        print(f"❌ Ошибка конфигурации: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка при запуске бота: {e}", exc_info=True)
+        print(f"❌ Ошибка при запуске бота: {e}")
+        raise
 
 
 if __name__ == "__main__":

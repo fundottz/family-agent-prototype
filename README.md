@@ -7,11 +7,11 @@
 ### 1. Настройка окружения
 
 ```bash
-6нщдбзще# Убедись, что .env файл заполнен:
-# - SUPABASE_URL, SUPABASE_KEY, SUPABASE_SERVICE_ROLE_KEY
+Убедись, что .env файл заполнен:
 # - DEEPSEEK_API_KEY
 # - TELEGRAM_BOT_TOKEN
-# - TIMEZONE=Europe/Moscow
+# - DB_FILE=family_calendar.db (опционально, по умолчанию family_calendar.db)
+# - TIMEZONE=Europe/Moscow (опционально)
 ```
 
 ### 2. Установка зависимостей
@@ -45,10 +45,10 @@ family-agent-prototype/
 ├── main.py                # Точка входа, конфигурация агента
 ├── telegram_bot.py        # Telegram бот
 ├── core_logic/            # Чистая бизнес-логика (framework-agnostic)
-│   ├── schemas.py         # Pydantic модели
-│   └── supabase_client.py # Supabase клиент
+│   └── schemas.py         # Pydantic модели
 ├── agents_wrappers.py     # Обертки тулов для Agno (будет создано)
 ├── scheduler.py           # Утренние дайджесты (будет создано)
+├── family_calendar.db     # SQLite база данных (создается автоматически)
 └── requirements.txt       # Зависимости
 ```
 
@@ -58,7 +58,7 @@ family-agent-prototype/
 - [x] Структура проекта
 - [x] Настройка окружения
 - [x] Pydantic модели
-- [x] Схема БД в Supabase
+- [x] SQLite база данных
 - [x] Базовый Telegram бот
 - [x] Минимальный Agno агент
 
@@ -77,9 +77,8 @@ family-agent-prototype/
 
 ## Получение ключей
 
-### Supabase
-- URL и ключи уже настроены через MCP
-- Service Role Key нужно получить из Dashboard → Settings → API
+### База данных
+Проект использует SQLite для хранения данных. База данных создается автоматически при первом запуске в файле `family_calendar.db`. Можно указать другой путь через переменную окружения `DB_FILE`.
 
 ### DeepSeek
 1. Зарегистрируйся на https://platform.deepseek.com
