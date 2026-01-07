@@ -9,6 +9,7 @@ from .schemas import (
     AvailabilityResult,
     ConflictInfo,
     ScheduleResult,
+    UpdateResult,
 )
 
 from .database import (
@@ -36,6 +37,7 @@ __all__ = [
     "AvailabilityResult",
     "ConflictInfo",
     "ScheduleResult",
+    "UpdateResult",
     # Database functions
     "init_database",
     "create_user",

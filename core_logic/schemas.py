@@ -73,3 +73,11 @@ class ScheduleResult(BaseModel):
     alternative_slots: List[datetime] = []
     message: str = ""
 
+
+class UpdateResult(BaseModel):
+    """Результат обновления события."""
+    success: bool
+    event_id: Optional[int] = None
+    conflicts: List[ConflictInfo] = []
+    message: str = ""
+

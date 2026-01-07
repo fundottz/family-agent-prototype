@@ -16,7 +16,7 @@ from agno.agent import Agent
 from agents_wrappers import _set_current_telegram_id, _reset_current_telegram_id
 from core_logic.schemas import CalendarEvent
 from core_logic.database import get_user_by_telegram_id, mark_partner_notified
-from core_logic.calendar_tools import DB_FILE, set_notify_partner_callback
+from core_logic.calendar_tools import DB_FILE, set_notify_partner_callback, set_notify_partner_update_callback
 
 load_dotenv()
 
@@ -260,6 +260,106 @@ async def notify_partner_about_event(
         return False
 
 
+async def notify_partner_about_event_update(
+    event: CalendarEvent,
+    creator_telegram_id: int,
+    updates: dict,
+) -> bool:
+    """
+    Уведомляет партнера об обновлении события.
+    
+    Args:
+        event: Обновленное событие
+        creator_telegram_id: Telegram ID создателя события
+        updates: Словарь с обновленными полями
+    
+    Returns:
+        True если уведомление отправлено успешно, False в противном случае
+    """
+    global _notification_bot
+    
+    if _notification_bot is None:
+        logger.warning("Bot instance не установлен, уведомление не отправлено")
+        return False
+    
+    try:
+        # Получаем информацию о создателе
+        creator = get_user_by_telegram_id(DB_FILE, creator_telegram_id)
+        if not creator:
+            logger.warning(f"Пользователь с telegram_id={creator_telegram_id} не найден")
+            return False
+        
+        # Проверяем наличие партнера
+        if not creator.partner_telegram_id:
+            logger.info(f"У пользователя {creator.name} нет партнера, уведомление не требуется")
+            return False
+        
+        # Формируем сообщение об изменениях
+        creator_name = creator.name
+        weekday_names = [
+            "понедельник", "вторник", "среда", "четверг",
+            "пятница", "суббота", "воскресенье"
+        ]
+        
+        # Собираем список изменений
+        changes = []
+        
+        if 'title' in updates:
+            changes.append(f"название: {event.title}")
+        
+        if 'datetime' in updates:
+            event_datetime = event.datetime
+            weekday = weekday_names[event_datetime.weekday()]
+            time_str = event_datetime.strftime("%H:%M")
+            date_str = event_datetime.strftime("%d.%m")
+            changes.append(f"время: {weekday} {date_str} {time_str}")
+        
+        if 'duration_minutes' in updates:
+            duration_hours = event.duration_minutes // 60
+            duration_mins = event.duration_minutes % 60
+            if duration_hours > 0 and duration_mins > 0:
+                duration_str = f"{duration_hours}ч {duration_mins}м"
+            elif duration_hours > 0:
+                duration_str = f"{duration_hours}ч"
+            else:
+                duration_str = f"{duration_mins}м"
+            changes.append(f"продолжительность: {duration_str}")
+        
+        if 'category' in updates:
+            changes.append(f"категория: {event.category.value}")
+        
+        if 'status' in updates:
+            changes.append(f"статус: {event.status.value}")
+        
+        if not changes:
+            # Если нет изменений для отображения, не отправляем уведомление
+            logger.info("Нет изменений для уведомления партнера")
+            return False
+        
+        # Формируем сообщение
+        if len(changes) == 1:
+            message = f"{creator_name} изменил(а) {changes[0]} в событии \"{event.title}\""
+        else:
+            changes_text = ", ".join(changes)
+            message = f"{creator_name} изменил(а) в событии \"{event.title}\": {changes_text}"
+        
+        # Отправляем сообщение партнеру
+        try:
+            await _notification_bot.send_message(
+                chat_id=creator.partner_telegram_id,
+                text=message
+            )
+            logger.info(f"Уведомление об обновлении отправлено партнеру {creator.partner_telegram_id} о событии {event.id}")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при отправке уведомления партнеру: {e}", exc_info=True)
+            return False
+            
+    except Exception as e:
+        logger.error(f"Ошибка при уведомлении партнера об обновлении: {e}", exc_info=True)
+        return False
+
+
 def set_notification_bot(bot: Any) -> None:
     """
     Устанавливает bot instance для отправки уведомлений.
@@ -301,6 +401,35 @@ def create_notify_callback() -> Optional[Callable[[CalendarEvent, int], None]]:
     return notify_callback
 
 
+def create_notify_update_callback() -> Optional[Callable[[CalendarEvent, int, dict], None]]:
+    """
+    Создает callback функцию для уведомления партнера об обновлении события.
+    Возвращает синхронную функцию, которая вызывает async notify_partner_about_event_update.
+    
+    Returns:
+        Callback функция или None, если bot не установлен
+    """
+    import asyncio
+    
+    def notify_update_callback(event: CalendarEvent, creator_telegram_id: int, updates: dict) -> None:
+        """
+        Синхронная обертка для async notify_partner_about_event_update.
+        """
+        try:
+            # Проверяем, есть ли активный event loop
+            try:
+                loop = asyncio.get_running_loop()
+                # Если loop уже запущен, создаем задачу (fire and forget)
+                asyncio.create_task(notify_partner_about_event_update(event, creator_telegram_id, updates))
+            except RuntimeError:
+                # Если нет активного event loop, создаем новый
+                asyncio.run(notify_partner_about_event_update(event, creator_telegram_id, updates))
+        except Exception as e:
+            logger.error(f"Ошибка в callback уведомления об обновлении: {e}", exc_info=True)
+    
+    return notify_update_callback
+
+
 def run_bot(agent: Agent) -> None:
     """
     Запускает Telegram бота.
@@ -325,6 +454,10 @@ def run_bot(agent: Agent) -> None:
     # Регистрируем callback для уведомлений партнера
     notify_callback = create_notify_callback()
     set_notify_partner_callback(notify_callback)
+    
+    # Регистрируем callback для уведомлений об обновлениях
+    notify_update_callback = create_notify_update_callback()
+    set_notify_partner_update_callback(notify_update_callback)
     
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start_command))

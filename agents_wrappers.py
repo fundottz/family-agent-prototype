@@ -20,12 +20,14 @@ from core_logic.calendar_tools import (
     schedule_event as _schedule_event,
     get_today_agenda as _get_today_agenda,
     get_agenda_for_period as _get_agenda_for_period,
+    update_event as _update_event,
     set_notify_partner_callback,
 )
 from core_logic.schemas import (
     CalendarEvent,
     AvailabilityResult,
     ScheduleResult,
+    UpdateResult,
     EventStatus,
     EventCategory,
 )
@@ -313,3 +315,62 @@ def get_current_datetime() -> Dict[str, str]:
         "weekday_ru": weekday_ru,
         "human_ru": human_ru,
     }
+
+
+def update_event(
+    event_id: int = Field(...),
+    updates: Dict[str, Any] = Field(...),
+    creator_telegram_id: Optional[int] = Field(default=None),
+) -> UpdateResult:
+    """
+    Обновляет событие в календаре.
+    
+    Контракт ввода (строго):
+    - event_id: int > 0
+    - updates: dict с полями для обновления. Поддерживаемые ключи:
+      - title: str (не пустой)
+      - datetime: ISO 8601 строка datetime с таймзоной, например: "2026-01-07T21:00:00+03:00"
+      - duration_minutes: int > 0
+      - category: one of {'дети','дом','ремонт','личное'}
+      - status: one of {'предложено','подтверждено','отклонено'}
+    - creator_telegram_id: автоматически берется из контекста, не передавай явно
+    
+    Проверка прав: только создатель события может его обновлять.
+    При изменении времени проверяются конфликты в общем календаре.
+    
+    Args:
+        event_id: ID события для обновления
+        updates: Словарь с полями для обновления
+        creator_telegram_id: Автоматически берется из контекста, не передавай явно
+    
+    Returns:
+        UpdateResult с результатом обновления события
+    """
+    # Определяем создателя из контекста, если не передан или передан 0
+    if creator_telegram_id is None or creator_telegram_id <= 0:
+        current = _get_current_telegram_id()
+        if current is None:
+            raise ValueError("Не удалось определить пользователя. Попробуйте еще раз.")
+        creator_telegram_id = current
+    
+    # Преобразуем только ISO строку datetime в datetime объект
+    # Вся остальная валидация выполняется в calendar_tools.update_event()
+    processed_updates = {}
+    
+    for key, value in updates.items():
+        if key == 'datetime':
+            # Преобразуем ISO строку в datetime
+            processed_updates[key] = _require_iso_datetime("datetime", value)
+        else:
+            # Остальные поля передаем как есть - валидация будет в calendar_tools
+            processed_updates[key] = value
+    
+    if not processed_updates:
+        raise ValueError("Нет полей для обновления. Поддерживаемые поля: title, datetime, duration_minutes, category, status")
+    
+    return _update_event(
+        event_id=event_id,
+        updates=processed_updates,
+        creator_telegram_id=creator_telegram_id,
+        notify_partner=True
+    )
