@@ -81,3 +81,12 @@ class UpdateResult(BaseModel):
     conflicts: List[ConflictInfo] = []
     message: str = ""
 
+
+class CancelResult(BaseModel):
+    """Результат отмены событий."""
+    success: bool
+    cancelled_count: int = 0
+    cancelled_event_ids: List[int] = []
+    failed_event_ids: List[int] = []
+    message: str = ""
+

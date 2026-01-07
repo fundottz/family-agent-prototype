@@ -2,7 +2,7 @@
 
 import os
 import logging
-from typing import Optional, Any, Callable
+from typing import Optional, Any, Callable, List
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
@@ -16,7 +16,7 @@ from agno.agent import Agent
 from agents_wrappers import _set_current_telegram_id, _reset_current_telegram_id
 from core_logic.schemas import CalendarEvent
 from core_logic.database import get_user_by_telegram_id, mark_partner_notified
-from core_logic.calendar_tools import DB_FILE, set_notify_partner_callback, set_notify_partner_update_callback
+from core_logic.calendar_tools import DB_FILE, set_notify_partner_callback, set_notify_partner_cancellation_callback
 
 load_dotenv()
 
@@ -260,18 +260,37 @@ async def notify_partner_about_event(
         return False
 
 
-async def notify_partner_about_event_update(
-    event: CalendarEvent,
-    creator_telegram_id: int,
-    updates: dict,
-) -> bool:
+def _format_event_datetime(event_datetime: datetime) -> str:
     """
-    Уведомляет партнера об обновлении события.
+    Форматирует дату и время события для уведомлений.
     
     Args:
-        event: Обновленное событие
-        creator_telegram_id: Telegram ID создателя события
-        updates: Словарь с обновленными полями
+        event_datetime: Дата и время события
+    
+    Returns:
+        Строка вида "понедельник 10:00"
+    """
+    weekday_names = [
+        "понедельник", "вторник", "среда", "четверг",
+        "пятница", "суббота", "воскресенье"
+    ]
+    weekday = weekday_names[event_datetime.weekday()]
+    time_str = event_datetime.strftime("%H:%M")
+    return f"{weekday} {time_str}"
+
+
+async def notify_partner_about_event_changes(
+    events: List[CalendarEvent],
+    creator_telegram_id: int,
+    action: str = "изменил(а)",
+) -> bool:
+    """
+    Универсальная функция для уведомления партнера об изменениях в событиях.
+    
+    Args:
+        events: Список событий, которые были изменены/отменены
+        creator_telegram_id: Telegram ID создателя событий
+        action: Действие, которое было выполнено (например, "отменил(а)", "изменил(а)")
     
     Returns:
         True если уведомление отправлено успешно, False в противном случае
@@ -280,6 +299,9 @@ async def notify_partner_about_event_update(
     
     if _notification_bot is None:
         logger.warning("Bot instance не установлен, уведомление не отправлено")
+        return False
+    
+    if not events:
         return False
     
     try:
@@ -294,54 +316,26 @@ async def notify_partner_about_event_update(
             logger.info(f"У пользователя {creator.name} нет партнера, уведомление не требуется")
             return False
         
-        # Формируем сообщение об изменениях
+        # Формируем сообщение в спокойном тоне
         creator_name = creator.name
-        weekday_names = [
-            "понедельник", "вторник", "среда", "четверг",
-            "пятница", "суббота", "воскресенье"
-        ]
         
-        # Собираем список изменений
-        changes = []
-        
-        if 'title' in updates:
-            changes.append(f"название: {event.title}")
-        
-        if 'datetime' in updates:
-            event_datetime = event.datetime
-            weekday = weekday_names[event_datetime.weekday()]
-            time_str = event_datetime.strftime("%H:%M")
-            date_str = event_datetime.strftime("%d.%m")
-            changes.append(f"время: {weekday} {date_str} {time_str}")
-        
-        if 'duration_minutes' in updates:
-            duration_hours = event.duration_minutes // 60
-            duration_mins = event.duration_minutes % 60
-            if duration_hours > 0 and duration_mins > 0:
-                duration_str = f"{duration_hours}ч {duration_mins}м"
-            elif duration_hours > 0:
-                duration_str = f"{duration_hours}ч"
-            else:
-                duration_str = f"{duration_mins}м"
-            changes.append(f"продолжительность: {duration_str}")
-        
-        if 'category' in updates:
-            changes.append(f"категория: {event.category.value}")
-        
-        if 'status' in updates:
-            changes.append(f"статус: {event.status.value}")
-        
-        if not changes:
-            # Если нет изменений для отображения, не отправляем уведомление
-            logger.info("Нет изменений для уведомления партнера")
-            return False
-        
-        # Формируем сообщение
-        if len(changes) == 1:
-            message = f"{creator_name} изменил(а) {changes[0]} в событии \"{event.title}\""
+        if len(events) == 1:
+            # Одно событие
+            event = events[0]
+            event_datetime_str = _format_event_datetime(event.datetime)
+            message = f"{creator_name} {action} {event_datetime_str}: {event.title}"
         else:
-            changes_text = ", ".join(changes)
-            message = f"{creator_name} изменил(а) в событии \"{event.title}\": {changes_text}"
+            # Несколько событий
+            event_list = []
+            for event in events[:5]:  # Ограничиваем до 5 событий
+                event_datetime_str = _format_event_datetime(event.datetime)
+                event_list.append(f"{event_datetime_str}: {event.title}")
+            
+            if len(events) > 5:
+                event_list.append(f"... и еще {len(events) - 5}")
+            
+            events_text = "\n".join(event_list)
+            message = f"{creator_name} {action} событий:\n{events_text}"
         
         # Отправляем сообщение партнеру
         try:
@@ -349,15 +343,34 @@ async def notify_partner_about_event_update(
                 chat_id=creator.partner_telegram_id,
                 text=message
             )
-            logger.info(f"Уведомление об обновлении отправлено партнеру {creator.partner_telegram_id} о событии {event.id}")
+            logger.info(f"Уведомление отправлено партнеру {creator.partner_telegram_id} о {len(events)} событии(ях) ({action})")
             return True
         except Exception as e:
             logger.error(f"Ошибка при отправке уведомления партнеру: {e}", exc_info=True)
             return False
             
     except Exception as e:
-        logger.error(f"Ошибка при уведомлении партнера об обновлении: {e}", exc_info=True)
+        logger.error(f"Ошибка при уведомлении партнера: {e}", exc_info=True)
         return False
+
+
+async def notify_partner_about_event_cancellation(
+    events: List[CalendarEvent],
+    creator_telegram_id: int,
+) -> bool:
+    """
+    Уведомляет партнера об отмене событий.
+    
+    Использует унифицированную функцию notify_partner_about_event_changes.
+    
+    Args:
+        events: Список отмененных событий
+        creator_telegram_id: Telegram ID создателя событий
+    
+    Returns:
+        True если уведомление отправлено успешно, False в противном случае
+    """
+    return await notify_partner_about_event_changes(events, creator_telegram_id, action="отменил(а)")
 
 
 def set_notification_bot(bot: Any) -> None:
@@ -401,33 +414,33 @@ def create_notify_callback() -> Optional[Callable[[CalendarEvent, int], None]]:
     return notify_callback
 
 
-def create_notify_update_callback() -> Optional[Callable[[CalendarEvent, int, dict], None]]:
+def create_notify_cancellation_callback() -> Optional[Callable[[List[CalendarEvent], int], None]]:
     """
-    Создает callback функцию для уведомления партнера об обновлении события.
-    Возвращает синхронную функцию, которая вызывает async notify_partner_about_event_update.
+    Создает callback функцию для уведомления партнера об отмене событий.
+    Возвращает синхронную функцию, которая вызывает async notify_partner_about_event_cancellation.
     
     Returns:
         Callback функция или None, если bot не установлен
     """
     import asyncio
     
-    def notify_update_callback(event: CalendarEvent, creator_telegram_id: int, updates: dict) -> None:
+    def notify_cancellation_callback(events: List[CalendarEvent], creator_telegram_id: int) -> None:
         """
-        Синхронная обертка для async notify_partner_about_event_update.
+        Синхронная обертка для async notify_partner_about_event_cancellation.
         """
         try:
             # Проверяем, есть ли активный event loop
             try:
                 loop = asyncio.get_running_loop()
                 # Если loop уже запущен, создаем задачу (fire and forget)
-                asyncio.create_task(notify_partner_about_event_update(event, creator_telegram_id, updates))
+                asyncio.create_task(notify_partner_about_event_cancellation(events, creator_telegram_id))
             except RuntimeError:
                 # Если нет активного event loop, создаем новый
-                asyncio.run(notify_partner_about_event_update(event, creator_telegram_id, updates))
+                asyncio.run(notify_partner_about_event_cancellation(events, creator_telegram_id))
         except Exception as e:
-            logger.error(f"Ошибка в callback уведомления об обновлении: {e}", exc_info=True)
+            logger.error(f"Ошибка в callback уведомления об отмене: {e}", exc_info=True)
     
-    return notify_update_callback
+    return notify_cancellation_callback
 
 
 def run_bot(agent: Agent) -> None:
@@ -455,9 +468,9 @@ def run_bot(agent: Agent) -> None:
     notify_callback = create_notify_callback()
     set_notify_partner_callback(notify_callback)
     
-    # Регистрируем callback для уведомлений об обновлениях
-    notify_update_callback = create_notify_update_callback()
-    set_notify_partner_update_callback(notify_update_callback)
+    # Регистрируем callback для уведомлений об отмене
+    notify_cancellation_callback = create_notify_cancellation_callback()
+    set_notify_partner_cancellation_callback(notify_cancellation_callback)
     
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start_command))

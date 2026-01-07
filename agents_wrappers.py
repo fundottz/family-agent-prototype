@@ -19,17 +19,17 @@ from core_logic.calendar_tools import (
     check_availability as _check_availability,
     schedule_event as _schedule_event,
     get_today_agenda as _get_today_agenda,
-    get_agenda_for_period as _get_agenda_for_period,
-    update_event as _update_event,
     set_notify_partner_callback,
+    cancel_events as _cancel_events,
+    find_events_to_cancel as _find_events_to_cancel,
 )
 from core_logic.schemas import (
     CalendarEvent,
     AvailabilityResult,
     ScheduleResult,
-    UpdateResult,
     EventStatus,
     EventCategory,
+    CancelResult,
 )
 
 # Часовой пояс по умолчанию (Europe/Moscow)
@@ -253,41 +253,6 @@ def get_agenda(
 ## В новой парадигме (общий календарь) личная/общая адженда не разделяются.
 
 
-def get_agenda_for_period(
-    start_date: str = Field(...),
-    end_date: str = Field(...),
-    telegram_id: Optional[int] = Field(default=None),
-) -> List[CalendarEvent]:
-    """
-    Получает список событий за указанный период.
-    
-    Контракт ввода (строго):
-    - start_date: ISO строка даты "YYYY-MM-DD" (начало периода, включительно)
-    - end_date: ISO строка даты "YYYY-MM-DD" (конец периода, включительно)
-    - telegram_id: игнорируется (общий календарь), автоматически берется из контекста если не передан
-    
-    Возвращает ВСЕ события общего календаря в указанном диапазоне дат.
-    
-    Args:
-        start_date: Начальная дата периода (ISO строка)
-        end_date: Конечная дата периода (ISO строка)
-        telegram_id: Игнорируется (для обратной совместимости)
-    
-    Returns:
-        Список событий, отсортированный по времени
-    
-    Raises:
-        ValueError: Если даты невалидны или start_date > end_date
-    """
-    start = _require_iso_date("start_date", start_date)
-    end = _require_iso_date("end_date", end_date)
-    
-    if start > end:
-        raise ValueError("start_date не может быть позже end_date")
-    
-    return _get_agenda_for_period(start, end)
-
-
 def get_current_datetime() -> Dict[str, str]:
     """
     Возвращает текущие дату и время в Europe/Moscow.
@@ -317,60 +282,109 @@ def get_current_datetime() -> Dict[str, str]:
     }
 
 
-def update_event(
-    event_id: int = Field(...),
-    updates: Dict[str, Any] = Field(...),
+def cancel_events(
+    event_ids: Optional[List[int]] = Field(default=None),
+    start_date: Optional[str] = Field(default=None),
+    end_date: Optional[str] = Field(default=None),
+    category: Optional[str] = Field(default=None),
+    title_filter: Optional[str] = Field(default=None),
     creator_telegram_id: Optional[int] = Field(default=None),
-) -> UpdateResult:
+) -> CancelResult:
     """
-    Обновляет событие в календаре.
+    Отменяет события в календаре.
     
     Контракт ввода (строго):
-    - event_id: int > 0
-    - updates: dict с полями для обновления. Поддерживаемые ключи:
-      - title: str (не пустой)
-      - datetime: ISO 8601 строка datetime с таймзоной, например: "2026-01-07T21:00:00+03:00"
-      - duration_minutes: int > 0
-      - category: one of {'дети','дом','ремонт','личное'}
-      - status: one of {'предложено','подтверждено','отклонено'}
+    - event_ids: список ID событий для отмены (опционально)
+    - start_date: ISO строка даты "YYYY-MM-DD" - начало диапазона (опционально)
+    - end_date: ISO строка даты "YYYY-MM-DD" - конец диапазона (опционально)
+    - category: фильтр по категории - одно из {'дети','дом','ремонт','личное'} (опционально)
+    - title_filter: фильтр по названию события (частичное совпадение, опционально)
     - creator_telegram_id: автоматически берется из контекста, не передавай явно
     
-    Проверка прав: только создатель события может его обновлять.
-    При изменении времени проверяются конфликты в общем календаре.
+    Если передан event_ids, отменяются указанные события.
+    Если передан start_date/end_date, система найдет события создателя в этом диапазоне и применит фильтры.
+    
+    Примеры использования:
+    - cancel_events(event_ids=[1, 2, 3]) - отменить конкретные события
+    - cancel_events(start_date="2026-01-07", end_date="2026-01-15") - отменить все события за период
+    - cancel_events(start_date="2026-01-07", end_date="2026-01-15", category="дети") - отменить события категории "дети" за период
     
     Args:
-        event_id: ID события для обновления
-        updates: Словарь с полями для обновления
-        creator_telegram_id: Автоматически берется из контекста, не передавай явно
+        event_ids: Список ID событий для отмены
+        start_date: Начало диапазона дат (ISO строка)
+        end_date: Конец диапазона дат (ISO строка)
+        category: Фильтр по категории
+        title_filter: Фильтр по названию
+        creator_telegram_id: Автоматически берется из контекста
     
     Returns:
-        UpdateResult с результатом обновления события
+        CancelResult с результатами отмены
     """
-    # Определяем создателя из контекста, если не передан или передан 0
+    # Определяем создателя из контекста
     if creator_telegram_id is None or creator_telegram_id <= 0:
         current = _get_current_telegram_id()
         if current is None:
             raise ValueError("Не удалось определить пользователя. Попробуйте еще раз.")
         creator_telegram_id = current
     
-    # Преобразуем только ISO строку datetime в datetime объект
-    # Вся остальная валидация выполняется в calendar_tools.update_event()
-    processed_updates = {}
+    # Если передан диапазон дат, ищем события
+    if start_date or end_date:
+        try:
+            # Валидируем даты
+            if not start_date or not end_date:
+                raise ValueError("Если указан диапазон, должны быть указаны и start_date, и end_date")
+            
+            start_dt = _require_iso_date("start_date", start_date)
+            end_dt = _require_iso_date("end_date", end_date)
+            
+            if start_dt > end_dt:
+                raise ValueError("start_date не может быть позже end_date")
+            
+            # Парсим категорию, если указана
+            category_filter = None
+            if category:
+                try:
+                    category_filter = EventCategory(category)
+                except Exception:
+                    raise ValueError("category должен быть одним из: 'дети', 'дом', 'ремонт', 'личное'.")
+            
+            # Находим события
+            events = _find_events_to_cancel(
+                creator_telegram_id,
+                start_dt,
+                end_dt,
+                title_filter,
+                category_filter
+            )
+            
+            if not events:
+                return CancelResult(
+                    success=False,
+                    message=f"Не найдено событий для отмены в указанном диапазоне"
+                )
+            
+            # Извлекаем ID событий
+            found_event_ids = [e.id for e in events if e.id]
+            
+            # Объединяем с переданными event_ids, если есть
+            if event_ids:
+                event_ids = list(set(event_ids + found_event_ids))
+            else:
+                event_ids = found_event_ids
+        
+        except Exception as e:
+            logger.error(f"Ошибка при поиске событий для отмены: {e}", exc_info=True)
+            return CancelResult(
+                success=False,
+                message=f"Ошибка при обработке запроса: {str(e)}"
+            )
     
-    for key, value in updates.items():
-        if key == 'datetime':
-            # Преобразуем ISO строку в datetime
-            processed_updates[key] = _require_iso_datetime("datetime", value)
-        else:
-            # Остальные поля передаем как есть - валидация будет в calendar_tools
-            processed_updates[key] = value
+    # Проверяем, что есть события для отмены
+    if not event_ids:
+        return CancelResult(
+            success=False,
+            message="Не указаны события для отмены. Укажите event_ids или диапазон дат (start_date/end_date)."
+        )
     
-    if not processed_updates:
-        raise ValueError("Нет полей для обновления. Поддерживаемые поля: title, datetime, duration_minutes, category, status")
-    
-    return _update_event(
-        event_id=event_id,
-        updates=processed_updates,
-        creator_telegram_id=creator_telegram_id,
-        notify_partner=True
-    )
+    # Отменяем события
+    return _cancel_events(event_ids, creator_telegram_id)

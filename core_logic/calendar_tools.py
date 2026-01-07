@@ -2,18 +2,18 @@
 
 import os
 from datetime import datetime, date, timedelta
-from typing import List, Optional, Callable, Any
+from typing import List, Optional, Callable, Any, Tuple
 import pytz
 
 from .schemas import (
     CalendarEvent,
     AvailabilityResult,
     ScheduleResult,
-    UpdateResult,
     ConflictInfo,
     EventStatus,
     EventCategory,
     User,
+    CancelResult,
 )
 from .database import (
     get_user_by_telegram_id,
@@ -21,8 +21,9 @@ from .database import (
     create_event,
     add_event_participant,
     get_events_in_range,
+    get_events_by_creator_in_range,
     get_event_by_id,
-    update_event as db_update_event,
+    delete_event,
 )
 
 # Часовой пояс по умолчанию
@@ -33,7 +34,7 @@ DB_FILE = os.getenv("DB_FILE", "family_calendar.db")
 
 # Глобальная переменная для callback уведомлений партнера
 _notify_partner_callback: Optional[Callable[[CalendarEvent, int], Any]] = None
-_notify_partner_update_callback: Optional[Callable[[CalendarEvent, int, dict], Any]] = None
+_notify_partner_cancellation_callback: Optional[Callable[[List[CalendarEvent], int], Any]] = None
 
 
 def set_notify_partner_callback(callback: Optional[Callable[[CalendarEvent, int], Any]]) -> None:
@@ -47,15 +48,15 @@ def set_notify_partner_callback(callback: Optional[Callable[[CalendarEvent, int]
     _notify_partner_callback = callback
 
 
-def set_notify_partner_update_callback(callback: Optional[Callable[[CalendarEvent, int, dict], Any]]) -> None:
+def set_notify_partner_cancellation_callback(callback: Optional[Callable[[List[CalendarEvent], int], Any]]) -> None:
     """
-    Устанавливает callback функцию для уведомления партнера об обновлении события.
+    Устанавливает callback функцию для уведомления партнера об отмене событий.
     
     Args:
-        callback: Функция, которая принимает (event: CalendarEvent, creator_telegram_id: int, updates: dict)
+        callback: Функция, которая принимает (events: List[CalendarEvent], creator_telegram_id: int)
     """
-    global _notify_partner_update_callback
-    _notify_partner_update_callback = callback
+    global _notify_partner_cancellation_callback
+    _notify_partner_cancellation_callback = callback
 
 
 def check_availability(
@@ -220,44 +221,6 @@ def get_user_info(telegram_id: int) -> Optional[User]:
     return get_user_by_telegram_id(DB_FILE, telegram_id)
 
 
-def get_agenda_for_period(
-    start_date: date,
-    end_date: date,
-) -> List[CalendarEvent]:
-    """
-    Получает список событий за указанный период.
-    
-    Возвращает ВСЕ события общего календаря в указанном диапазоне дат.
-    
-    Args:
-        start_date: Начальная дата периода (включительно)
-        end_date: Конечная дата периода (включительно)
-    
-    Returns:
-        Список событий, отсортированный по времени
-    
-    Raises:
-        ValueError: Если start_date > end_date
-    """
-    if start_date > end_date:
-        raise ValueError("start_date не может быть позже end_date")
-    
-    # Преобразуем date в datetime для начала и конца периода
-    start_datetime = DEFAULT_TIMEZONE.localize(
-        datetime.combine(start_date, datetime.min.time())
-    )
-    end_datetime = DEFAULT_TIMEZONE.localize(
-        datetime.combine(end_date, datetime.max.time())
-    )
-    
-    events = get_events_in_range(DB_FILE, start_datetime, end_datetime)
-    
-    # Сортируем по времени (уже отсортированы в БД, но на всякий случай)
-    events.sort(key=lambda e: e.datetime)
-    
-    return events
-
-
 def get_joint_today_agenda(
     telegram_id: int,
     target_date: Optional[date] = None,
@@ -278,201 +241,122 @@ def get_joint_today_agenda(
     return get_today_agenda(target_date)
 
 
-def update_event(
-    event_id: int,
-    updates: dict,
+def find_events_to_cancel(
     creator_telegram_id: int,
-    notify_partner: bool = True,
-    notify_callback: Optional[Callable[[CalendarEvent, int, dict], Any]] = None,
-) -> UpdateResult:
+    start_date: date,
+    end_date: date,
+    title_filter: Optional[str] = None,
+    category_filter: Optional[EventCategory] = None,
+) -> List[CalendarEvent]:
     """
-    Обновляет событие в календаре.
-    
-    Проверяет права доступа (только создатель может обновлять), валидирует обновления,
-    проверяет конфликты при изменении времени и уведомляет партнера.
+    Находит события для отмены по заданным критериям.
     
     Args:
-        event_id: ID события для обновления
-        updates: Словарь с полями для обновления. Поддерживаемые ключи:
-                - title: str
-                - datetime: datetime
-                - duration_minutes: int
-                - category: EventCategory или str
-                - status: EventStatus или str
-        creator_telegram_id: Telegram ID создателя события (для проверки прав)
-        notify_partner: Если True, отправляет уведомление партнеру (требует notify_callback)
-        notify_callback: Опциональная функция для уведомления партнера.
-                        Должна принимать (event: CalendarEvent, creator_telegram_id: int, updates: dict)
+        creator_telegram_id: Telegram ID создателя событий
+        start_date: Начальная дата диапазона (включительно)
+        end_date: Конечная дата диапазона (включительно)
+        title_filter: Опциональный фильтр по названию (частичное совпадение)
+        category_filter: Опциональный фильтр по категории
     
     Returns:
-        UpdateResult с результатом обновления события
+        Список событий, соответствующих критериям
     """
-    # Получаем событие из БД
-    event = get_event_by_id(DB_FILE, event_id)
-    if not event:
-        return UpdateResult(
-            success=False,
-            message=f"Событие с ID {event_id} не найдено"
-        )
+    # Получаем события создателя за период
+    events = get_events_by_creator_in_range(DB_FILE, creator_telegram_id, start_date, end_date)
     
-    # Проверка прав: только создатель может обновлять событие
-    if event.creator_telegram_id != creator_telegram_id:
-        return UpdateResult(
-            success=False,
-            message="Только создатель события может его обновлять"
-        )
-    
-    # Валидация обновлений
-    allowed_fields = {'title', 'datetime', 'duration_minutes', 'category', 'status'}
-    for key in updates.keys():
-        if key not in allowed_fields:
-            return UpdateResult(
-                success=False,
-                message=f"Поле '{key}' не может быть обновлено. Разрешенные поля: {', '.join(allowed_fields)}"
-            )
-    
-    # Подготавливаем обновления для БД и нормализуем datetime
-    db_updates = {}
-    normalized_datetime = None
-    
-    if 'title' in updates:
-        title = str(updates['title']).strip()
-        if not title:
-            return UpdateResult(
-                success=False,
-                message="title не может быть пустым"
-            )
-        db_updates['title'] = title
-    
-    if 'datetime' in updates:
-        dt = updates['datetime']
-        if not isinstance(dt, datetime):
-            return UpdateResult(
-                success=False,
-                message="datetime должен быть объектом datetime"
-            )
-        # Убеждаемся, что datetime в правильном timezone
-        if dt.tzinfo is None:
-            dt = DEFAULT_TIMEZONE.localize(dt)
-        elif dt.tzinfo != DEFAULT_TIMEZONE:
-            dt = dt.astimezone(DEFAULT_TIMEZONE)
-        normalized_datetime = dt
-        db_updates['datetime'] = dt
-    
-    if 'duration_minutes' in updates:
-        duration = updates['duration_minutes']
-        if not isinstance(duration, int) or duration <= 0:
-            return UpdateResult(
-                success=False,
-                message="duration_minutes должен быть положительным числом"
-            )
-        db_updates['duration_minutes'] = duration
-    
-    # Проверка конфликтов при изменении времени
-    # Используем нормализованные значения для проверки конфликтов
-    check_datetime = normalized_datetime if normalized_datetime else event.datetime
-    check_duration = db_updates.get('duration_minutes', event.duration_minutes)
-    
-    # Если изменяется время или продолжительность, проверяем конфликты
-    if 'datetime' in updates or 'duration_minutes' in updates:
-        # Получаем конфликтующие события (исключая само обновляемое событие)
-        conflicting_events = get_conflicting_events_global(DB_FILE, check_datetime, check_duration)
-        # Фильтруем само событие из списка конфликтов
-        conflicting_events = [e for e in conflicting_events if e.id != event_id]
+    # Применяем фильтры
+    filtered_events = []
+    for event in events:
+        # Фильтр по категории
+        if category_filter and event.category != category_filter:
+            continue
         
-        if conflicting_events:
-            return UpdateResult(
-                success=False,
-                event_id=event_id,
-                conflicts=[
-                    ConflictInfo(
-                        user_id=0,
-                        conflicting_event=conflict_event,
-                        conflict_type="time_overlap",
-                    )
-                    for conflict_event in conflicting_events
-                ],
-                message="Обнаружены конфликты времени в общем календаре"
+        # Фильтр по названию
+        if title_filter and title_filter.lower() not in event.title.lower():
+            continue
+        
+        filtered_events.append(event)
+    
+    return filtered_events
+
+
+def cancel_events(
+    event_ids: List[int],
+    creator_telegram_id: int,
+    notify_partner: bool = True,
+) -> CancelResult:
+    """
+    Отменяет события (удаляет их из календаря).
+    
+    Проверяет права: только создатель может отменить свои события.
+    
+    Args:
+        event_ids: Список ID событий для отмены
+        creator_telegram_id: Telegram ID создателя (для проверки прав)
+        notify_partner: Если True, отправляет уведомление партнеру
+    
+    Returns:
+        CancelResult с результатами отмены
+    """
+    if not event_ids:
+        return CancelResult(
+            success=False,
+            message="Не указаны события для отмены"
+        )
+    
+    cancelled_ids = []
+    failed_ids = []
+    cancelled_events = []  # Сохраняем события для уведомления
+    
+    for event_id in event_ids:
+        try:
+            # Получаем событие для проверки прав
+            event = get_event_by_id(DB_FILE, event_id)
+            if not event:
+                failed_ids.append(event_id)
+                continue
+            
+            # Проверка прав: только создатель может отменить
+            if event.creator_telegram_id != creator_telegram_id:
+                failed_ids.append(event_id)
+                continue
+            
+            # Удаляем событие
+            if delete_event(DB_FILE, event_id):
+                cancelled_ids.append(event_id)
+                cancelled_events.append(event)
+            else:
+                failed_ids.append(event_id)
+        
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Ошибка при отмене события {event_id}: {e}")
+            failed_ids.append(event_id)
+    
+    # Отправляем уведомление партнеру, если требуется
+    if notify_partner and cancelled_events and _notify_partner_cancellation_callback:
+        try:
+            _notify_partner_cancellation_callback(cancelled_events, creator_telegram_id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Ошибка при уведомлении партнера об отмене: {e}"
             )
     
-    if 'category' in updates:
-        category = updates['category']
-        if isinstance(category, EventCategory):
-            db_updates['category'] = category
-        elif isinstance(category, str):
-            try:
-                db_updates['category'] = EventCategory(category)
-            except ValueError:
-                return UpdateResult(
-                    success=False,
-                    message=f"category должен быть одним из: {', '.join([c.value for c in EventCategory])}"
-                )
+    success = len(cancelled_ids) > 0
+    message = ""
+    if len(cancelled_ids) > 0:
+        message = f"Отменено событий: {len(cancelled_ids)}"
+    if len(failed_ids) > 0:
+        if message:
+            message += f". Не удалось отменить: {len(failed_ids)}"
         else:
-            return UpdateResult(
-                success=False,
-                message="category должен быть EventCategory или str"
-            )
+            message = f"Не удалось отменить события: {len(failed_ids)}"
     
-    if 'status' in updates:
-        status = updates['status']
-        if isinstance(status, EventStatus):
-            db_updates['status'] = status
-        elif isinstance(status, str):
-            try:
-                db_updates['status'] = EventStatus(status)
-            except ValueError:
-                return UpdateResult(
-                    success=False,
-                    message=f"status должен быть одним из: {', '.join([s.value for s in EventStatus])}"
-                )
-        else:
-            return UpdateResult(
-                success=False,
-                message="status должен быть EventStatus или str"
-            )
-    
-    if not db_updates:
-        return UpdateResult(
-            success=False,
-            message="Нет полей для обновления"
-        )
-    
-    # Обновляем событие в БД
-    try:
-        success = db_update_event(DB_FILE, event_id, db_updates)
-        if not success:
-            return UpdateResult(
-                success=False,
-                message="Не удалось обновить событие в базе данных"
-            )
-        
-        # Получаем обновленное событие
-        updated_event = get_event_by_id(DB_FILE, event_id)
-        if not updated_event:
-            return UpdateResult(
-                success=False,
-                message="Событие было обновлено, но не удалось получить обновленные данные"
-            )
-        
-        # Отправляем уведомление партнеру, если требуется
-        callback_to_use = notify_callback or _notify_partner_update_callback
-        if notify_partner and callback_to_use:
-            try:
-                callback_to_use(updated_event, creator_telegram_id, updates)
-            except Exception as e:
-                # Логируем ошибку, но не блокируем обновление события
-                import logging
-                logging.getLogger(__name__).warning(
-                    f"Ошибка при уведомлении партнера об обновлении: {e}"
-                )
-        
-        return UpdateResult(
-            success=True,
-            event_id=event_id,
-            message="Событие успешно обновлено"
-        )
-    except Exception as e:
-        return UpdateResult(
-            success=False,
-            message=f"Ошибка при обновлении события: {str(e)}"
-        )
+    return CancelResult(
+        success=success,
+        cancelled_count=len(cancelled_ids),
+        cancelled_event_ids=cancelled_ids,
+        failed_event_ids=failed_ids,
+        message=message
+    )
