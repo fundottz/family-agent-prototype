@@ -14,6 +14,7 @@ from agents_wrappers import (
     get_current_datetime,
     get_agenda,
     update_event,
+    cancel_events,
 )
 
 load_dotenv()
@@ -69,6 +70,7 @@ def create_family_planner_agent() -> Agent:
 - Никогда не запрашивай у пользователя его Telegram ID.
 - Для повестки используй get_agenda(target_date). Это общий календарь: все события видны обоим партнерам.
 - Для обновления событий используй update_event(event_id, updates). Только создатель события может его обновлять. При изменении времени проверяются конфликты автоматически. КРИТИЧНО: Выполняй все проверки (check_availability, update_event) молча, без сообщений пользователю о процессе. Сообщи только финальный результат.
+- Для отмены событий используй cancel_events. Можно указать конкретные event_ids или диапазон дат (start_date/end_date в ISO формате "YYYY-MM-DD") с опциональными фильтрами по категории и названию.
 
 ОБЩИЙ КАЛЕНДАРЬ (ВАЖНО):
 - Это один общий календарь: любые события (включая "у меня...") видны обоим партнерам и блокируют время для всех.
@@ -119,6 +121,7 @@ def create_family_planner_agent() -> Agent:
             get_current_datetime,
             get_agenda,
             update_event,
+            cancel_events,
         ],
         # Используем SQLite для хранения истории диалогов
         db=SqliteDb(db_file=db_file),

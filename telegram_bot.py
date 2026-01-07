@@ -2,6 +2,7 @@
 
 import os
 import logging
+from datetime import datetime
 from typing import Optional, Any, Callable, List
 from dotenv import load_dotenv
 from telegram import Update
@@ -227,16 +228,10 @@ async def notify_partner_about_event(
         creator_name = creator.name
         
         # Форматируем дату и время
-        event_datetime = event.datetime
-        weekday_names = [
-            "понедельник", "вторник", "среда", "четверг",
-            "пятница", "суббота", "воскресенье"
-        ]
-        weekday = weekday_names[event_datetime.weekday()]
-        time_str = event_datetime.strftime("%H:%M")
+        event_datetime_str = _format_event_datetime(event.datetime)
         
         # Формируем сообщение
-        message = f"{creator_name} занял(а) {weekday} {time_str}: {event.title}"
+        message = f"{creator_name} занял(а) {event_datetime_str}: {event.title}"
         
         # Отправляем сообщение партнеру
         try:

@@ -22,6 +22,11 @@ from core_logic.calendar_tools import (
     set_notify_partner_callback,
     cancel_events as _cancel_events,
     find_events_to_cancel as _find_events_to_cancel,
+    DB_FILE,
+)
+from core_logic.database import (
+    get_event_by_id,
+    update_event as _update_event_db,
 )
 from core_logic.schemas import (
     CalendarEvent,
@@ -30,6 +35,8 @@ from core_logic.schemas import (
     EventStatus,
     EventCategory,
     CancelResult,
+    UpdateResult,
+    ConflictInfo,
 )
 
 # Часовой пояс по умолчанию (Europe/Moscow)
@@ -61,6 +68,27 @@ def set_current_telegram_id(telegram_id: int) -> bool:
 def _get_current_telegram_id() -> Optional[int]:
     """Внутреннее: получает текущий Telegram ID из ContextVar."""
     return _CURRENT_TG_ID.get()
+
+
+def _resolve_creator_telegram_id(creator_telegram_id: Optional[int]) -> int:
+    """
+    Вспомогательная функция для получения creator_telegram_id из контекста.
+    
+    Args:
+        creator_telegram_id: Переданный ID или None
+    
+    Returns:
+        Telegram ID создателя
+    
+    Raises:
+        ValueError: Если не удалось определить пользователя
+    """
+    if creator_telegram_id is None or creator_telegram_id <= 0:
+        current = _get_current_telegram_id()
+        if current is None:
+            raise ValueError("Не удалось определить пользователя. Попробуйте еще раз.")
+        return current
+    return creator_telegram_id
 
 
 def _require_iso_datetime(param_name: str, value: Any) -> datetime:
@@ -253,6 +281,140 @@ def get_agenda(
 ## В новой парадигме (общий календарь) личная/общая адженда не разделяются.
 
 
+def update_event(
+    event_id: int = Field(...),
+    title: Optional[str] = Field(default=None),
+    datetime: Optional[str] = Field(default=None),
+    duration_minutes: Optional[int] = Field(default=None),
+    category: Optional[str] = Field(default=None),
+    creator_telegram_id: Optional[int] = Field(default=None),
+) -> UpdateResult:
+    """
+    Обновляет событие в календаре.
+    
+    Контракт ввода (строго):
+    - event_id: ID события для обновления (обязательно)
+    - title: новое название события (опционально)
+    - datetime: ISO 8601 строка datetime с таймзоной, например: "2026-01-07T21:00:00+03:00" (опционально)
+    - duration_minutes: новая продолжительность в минутах (опционально)
+    - category: новая категория - одно из {'дети','дом','ремонт','личное'} (опционально)
+    - creator_telegram_id: автоматически берется из контекста, не передавай явно
+    
+    Только создатель события может его обновлять. При изменении времени проверяются конфликты автоматически.
+    
+    Args:
+        event_id: ID события для обновления
+        title: Новое название события
+        datetime: Новая дата и время события (ISO строка)
+        duration_minutes: Новая продолжительность в минутах
+        category: Новая категория события
+        creator_telegram_id: Автоматически берется из контекста
+    
+    Returns:
+        UpdateResult с результатами обновления
+    """
+    # Определяем создателя из контекста
+    creator_telegram_id = _resolve_creator_telegram_id(creator_telegram_id)
+    
+    # Получаем событие для проверки прав
+    event = get_event_by_id(DB_FILE, event_id)
+    if not event:
+        return UpdateResult(
+            success=False,
+            event_id=event_id,
+            message=f"Событие {event_id} не найдено"
+        )
+    
+    # Проверка прав: только создатель может обновлять
+    if event.creator_telegram_id != creator_telegram_id:
+        return UpdateResult(
+            success=False,
+            event_id=event_id,
+            message="Только создатель события может его обновлять"
+        )
+    
+    # Формируем словарь обновлений
+    updates = {}
+    
+    if title is not None:
+        updates['title'] = title
+    
+    if datetime is not None:
+        event_dt = _require_iso_datetime("datetime", datetime)
+        updates['datetime'] = event_dt
+    
+    if duration_minutes is not None:
+        if duration_minutes <= 0:
+            raise ValueError("duration_minutes должен быть положительным числом")
+        updates['duration_minutes'] = duration_minutes
+    
+    if category is not None:
+        try:
+            event_category = EventCategory(category)
+            updates['category'] = event_category
+        except Exception:
+            raise ValueError("category должен быть одним из: 'дети', 'дом', 'ремонт', 'личное'.")
+    
+    if not updates:
+        return UpdateResult(
+            success=False,
+            event_id=event_id,
+            message="Не указаны поля для обновления"
+        )
+    
+    # Если изменяется время, проверяем конфликты
+    if 'datetime' in updates or 'duration_minutes' in updates:
+        new_datetime = updates.get('datetime', event.datetime)
+        new_duration = updates.get('duration_minutes', event.duration_minutes)
+        
+        # Проверяем доступность нового времени
+        availability = _check_availability(new_datetime, new_duration)
+        
+        # Исключаем текущее событие из конфликтов
+        conflicting_events = [
+            ce for ce in availability.conflicting_events
+            if ce.id != event_id
+        ]
+        
+        if conflicting_events:
+            return UpdateResult(
+                success=False,
+                event_id=event_id,
+                conflicts=[
+                    ConflictInfo(
+                        user_id=0,
+                        conflicting_event=ce,
+                        conflict_type="time_overlap",
+                    )
+                    for ce in conflicting_events
+                ],
+                message="Обнаружены конфликты времени в общем календаре"
+            )
+    
+    # Обновляем событие в БД
+    try:
+        success = _update_event_db(DB_FILE, event_id, updates)
+        if success:
+            return UpdateResult(
+                success=True,
+                event_id=event_id,
+                message="Событие успешно обновлено"
+            )
+        else:
+            return UpdateResult(
+                success=False,
+                event_id=event_id,
+                message="Не удалось обновить событие"
+            )
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении события: {e}", exc_info=True)
+        return UpdateResult(
+            success=False,
+            event_id=event_id,
+            message=f"Ошибка при обновлении события: {str(e)}"
+        )
+
+
 def get_current_datetime() -> Dict[str, str]:
     """
     Возвращает текущие дату и время в Europe/Moscow.
@@ -321,11 +483,7 @@ def cancel_events(
         CancelResult с результатами отмены
     """
     # Определяем создателя из контекста
-    if creator_telegram_id is None or creator_telegram_id <= 0:
-        current = _get_current_telegram_id()
-        if current is None:
-            raise ValueError("Не удалось определить пользователя. Попробуйте еще раз.")
-        creator_telegram_id = current
+    creator_telegram_id = _resolve_creator_telegram_id(creator_telegram_id)
     
     # Если передан диапазон дат, ищем события
     if start_date or end_date:
