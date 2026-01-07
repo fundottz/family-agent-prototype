@@ -205,6 +205,44 @@ def get_user_info(telegram_id: int) -> Optional[User]:
     return get_user_by_telegram_id(DB_FILE, telegram_id)
 
 
+def get_agenda_for_period(
+    start_date: date,
+    end_date: date,
+) -> List[CalendarEvent]:
+    """
+    Получает список событий за указанный период.
+    
+    Возвращает ВСЕ события общего календаря в указанном диапазоне дат.
+    
+    Args:
+        start_date: Начальная дата периода (включительно)
+        end_date: Конечная дата периода (включительно)
+    
+    Returns:
+        Список событий, отсортированный по времени
+    
+    Raises:
+        ValueError: Если start_date > end_date
+    """
+    if start_date > end_date:
+        raise ValueError("start_date не может быть позже end_date")
+    
+    # Преобразуем date в datetime для начала и конца периода
+    start_datetime = DEFAULT_TIMEZONE.localize(
+        datetime.combine(start_date, datetime.min.time())
+    )
+    end_datetime = DEFAULT_TIMEZONE.localize(
+        datetime.combine(end_date, datetime.max.time())
+    )
+    
+    events = get_events_in_range(DB_FILE, start_datetime, end_datetime)
+    
+    # Сортируем по времени (уже отсортированы в БД, но на всякий случай)
+    events.sort(key=lambda e: e.datetime)
+    
+    return events
+
+
 def get_joint_today_agenda(
     telegram_id: int,
     target_date: Optional[date] = None,

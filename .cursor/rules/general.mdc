@@ -13,3 +13,8 @@ alwaysApply: true
 - Use `uv` for dependency management
 - Virtual environment must be in `.venv` directory
 - Always run `uv sync` before executing code
+
+## Project Execution
+- **CRITICAL: Always run the project using `./run.sh` script only**
+- The `./run.sh` script handles virtual environment activation and proper execution
+- Never run `python main.py` or `python3 main.py` directly

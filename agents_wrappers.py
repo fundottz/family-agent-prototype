@@ -19,6 +19,7 @@ from core_logic.calendar_tools import (
     check_availability as _check_availability,
     schedule_event as _schedule_event,
     get_today_agenda as _get_today_agenda,
+    get_agenda_for_period as _get_agenda_for_period,
     set_notify_partner_callback,
 )
 from core_logic.schemas import (
@@ -248,6 +249,41 @@ def get_agenda(
 
 
 ## В новой парадигме (общий календарь) личная/общая адженда не разделяются.
+
+
+def get_agenda_for_period(
+    start_date: str = Field(...),
+    end_date: str = Field(...),
+    telegram_id: Optional[int] = Field(default=None),
+) -> List[CalendarEvent]:
+    """
+    Получает список событий за указанный период.
+    
+    Контракт ввода (строго):
+    - start_date: ISO строка даты "YYYY-MM-DD" (начало периода, включительно)
+    - end_date: ISO строка даты "YYYY-MM-DD" (конец периода, включительно)
+    - telegram_id: игнорируется (общий календарь), автоматически берется из контекста если не передан
+    
+    Возвращает ВСЕ события общего календаря в указанном диапазоне дат.
+    
+    Args:
+        start_date: Начальная дата периода (ISO строка)
+        end_date: Конечная дата периода (ISO строка)
+        telegram_id: Игнорируется (для обратной совместимости)
+    
+    Returns:
+        Список событий, отсортированный по времени
+    
+    Raises:
+        ValueError: Если даты невалидны или start_date > end_date
+    """
+    start = _require_iso_date("start_date", start_date)
+    end = _require_iso_date("end_date", end_date)
+    
+    if start > end:
+        raise ValueError("start_date не может быть позже end_date")
+    
+    return _get_agenda_for_period(start, end)
 
 
 def get_current_datetime() -> Dict[str, str]:
