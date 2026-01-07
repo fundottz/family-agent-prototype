@@ -531,6 +531,104 @@ def get_conflicting_events(
         return conflicting_events
 
 
+def get_events_in_range(
+    db_file: str,
+    start_datetime: datetime,
+    end_datetime: datetime,
+) -> List[CalendarEvent]:
+    """
+    Получает ВСЕ события в указанном диапазоне дат (общий календарь).
+    """
+    if not start_datetime or not end_datetime:
+        raise ValueError("start_datetime и end_datetime обязательны")
+
+    with db_connection(db_file) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, title, datetime, duration_minutes, creator_telegram_id,
+                   status, category, created_at, partner_notified
+            FROM events
+            WHERE datetime >= ? AND datetime <= ?
+            ORDER BY datetime ASC
+            """,
+            (_to_utc_iso(start_datetime), _to_utc_iso(end_datetime)),
+        )
+
+        events: List[CalendarEvent] = []
+        for row in cursor.fetchall():
+            events.append(
+                CalendarEvent(
+                    id=row["id"],
+                    title=row["title"],
+                    datetime=_from_utc_iso(row["datetime"]),
+                    duration_minutes=row["duration_minutes"],
+                    creator_telegram_id=row["creator_telegram_id"],
+                    status=EventStatus(row["status"]),
+                    category=EventCategory(row["category"]),
+                    created_at=_from_utc_iso(row["created_at"]) if row["created_at"] else None,
+                    partner_notified=bool(row["partner_notified"]),
+                )
+            )
+        return events
+
+
+def get_conflicting_events_global(
+    db_file: str,
+    event_datetime: datetime,
+    duration_minutes: int,
+) -> List[CalendarEvent]:
+    """
+    Находит события общего календаря, которые конфликтуют по времени с указанным интервалом.
+    """
+    from datetime import timedelta
+
+    if not event_datetime:
+        raise ValueError("event_datetime обязателен")
+    if duration_minutes <= 0:
+        raise ValueError("duration_minutes должен быть положительным числом")
+
+    with db_connection(db_file) as conn:
+        cursor = conn.cursor()
+        event_end = event_datetime + timedelta(minutes=duration_minutes)
+
+        # Берем широкий диапазон, затем фильтруем пересечения в Python
+        search_start = event_datetime - timedelta(days=1)
+        search_end = event_end + timedelta(days=1)
+
+        cursor.execute(
+            """
+            SELECT id, title, datetime, duration_minutes, creator_telegram_id,
+                   status, category, created_at, partner_notified
+            FROM events
+            WHERE datetime >= ? AND datetime <= ?
+            """,
+            (_to_utc_iso(search_start), _to_utc_iso(search_end)),
+        )
+
+        conflicting_events: List[CalendarEvent] = []
+        for row in cursor.fetchall():
+            existing_event_start = _from_utc_iso(row["datetime"])
+            existing_event_end = existing_event_start + timedelta(minutes=row["duration_minutes"])
+
+            if not (event_end <= existing_event_start or event_datetime >= existing_event_end):
+                conflicting_events.append(
+                    CalendarEvent(
+                        id=row["id"],
+                        title=row["title"],
+                        datetime=existing_event_start,
+                        duration_minutes=row["duration_minutes"],
+                        creator_telegram_id=row["creator_telegram_id"],
+                        status=EventStatus(row["status"]),
+                        category=EventCategory(row["category"]),
+                        created_at=_from_utc_iso(row["created_at"]) if row["created_at"] else None,
+                        partner_notified=bool(row["partner_notified"]),
+                    )
+                )
+
+        return conflicting_events
+
+
 def update_event_status(db_file: str, event_id: int, status: EventStatus) -> bool:
     """
     Обновляет статус события.
@@ -667,4 +765,73 @@ def get_event_participants(db_file: str, event_id: int) -> List[int]:
         """, (event_id,))
         
         return [row['user_id'] for row in cursor.fetchall()]
+
+
+def get_events_by_participant_telegram_id(
+    db_file: str,
+    telegram_id: int,
+    start_datetime: Optional[datetime] = None,
+    end_datetime: Optional[datetime] = None
+) -> List[CalendarEvent]:
+    """
+    Получает события, где пользователь является участником (через event_participants).
+    
+    Args:
+        db_file: Путь к файлу базы данных
+        telegram_id: Telegram ID пользователя
+        start_datetime: Начало периода (опционально)
+        end_datetime: Конец периода (опционально)
+    
+    Returns:
+        Список событий, где пользователь является участником
+    
+    Raises:
+        ValueError: Если telegram_id невалиден
+    """
+    if not telegram_id or telegram_id <= 0:
+        raise ValueError("telegram_id должен быть положительным числом")
+    
+    # Сначала получаем user_id по telegram_id
+    user = get_user_by_telegram_id(db_file, telegram_id)
+    if not user or not user.id:
+               return []
+    
+    with db_connection(db_file) as conn:
+        cursor = conn.cursor()
+        query = """
+            SELECT e.id, e.title, e.datetime, e.duration_minutes, e.creator_telegram_id,
+                   e.status, e.category, e.created_at, e.partner_notified
+            FROM events e
+            INNER JOIN event_participants ep ON e.id = ep.event_id
+            WHERE ep.user_id = ?
+        """
+        params = [user.id]
+        
+        if start_datetime:
+            query += " AND e.datetime >= ?"
+            params.append(_to_utc_iso(start_datetime))
+        
+        if end_datetime:
+            query += " AND e.datetime <= ?"
+            params.append(_to_utc_iso(end_datetime))
+        
+        query += " ORDER BY e.datetime ASC"
+        
+        cursor.execute(query, params)
+        
+        events = []
+        for row in cursor.fetchall():
+            events.append(CalendarEvent(
+                id=row['id'],
+                title=row['title'],
+                datetime=_from_utc_iso(row['datetime']),
+                duration_minutes=row['duration_minutes'],
+                creator_telegram_id=row['creator_telegram_id'],
+                status=EventStatus(row['status']),
+                category=EventCategory(row['category']),
+                created_at=_from_utc_iso(row['created_at']) if row['created_at'] else None,
+                partner_notified=bool(row['partner_notified'])
+            ))
+        
+        return events
 

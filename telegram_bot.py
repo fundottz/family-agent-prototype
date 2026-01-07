@@ -13,6 +13,7 @@ from telegram.ext import (
     ContextTypes,
 )
 from agno.agent import Agent
+from agents_wrappers import _set_current_telegram_id, _reset_current_telegram_id
 
 load_dotenv()
 
@@ -48,6 +49,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(welcome_message)
 
+async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сбрасывает контекст диалога для пользователя (новая session_id версия)."""
+    if not update.message or not update.effective_user:
+        return
+    telegram_user_id = update.effective_user.id
+    session_versions = context.bot_data.setdefault("session_versions", {})
+    current = session_versions.get(telegram_user_id, 2)
+    session_versions[telegram_user_id] = current + 1
+    await update.message.reply_text("Ок, сбросил контекст. Продолжай — я начну как с чистого листа.")
+
 
 async def handle_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -80,6 +91,9 @@ async def handle_message(
     user_name = update.effective_user.first_name or "Пользователь"
     
     logger.info(f"Сообщение от {user_name} (ID: {telegram_user_id}): {user_message}")
+
+    # Устанавливаем текущий Telegram ID для tools (контекст на текущую asyncio-задачу)
+    token = _set_current_telegram_id(int(telegram_user_id))
     
     # Показываем пользователю, что бот обрабатывает сообщение
     processing_message = await update.message.reply_text("Обрабатываю...")
@@ -93,11 +107,21 @@ async def handle_message(
         # Используем telegram_id как для user_id, так и для session_id,
         # чтобы каждый пользователь имел свою отдельную сессию
         user_id_str = str(telegram_user_id)
-        session_id = f"telegram_{telegram_user_id}"
+        session_versions = context.bot_data.setdefault("session_versions", {})
+        version = session_versions.get(telegram_user_id, 2)  # v2 отключает старую историю с просьбами ID
+        session_id = f"telegram_{telegram_user_id}_v{version}"
+
+        # Усиливаем контекст против "попроси Telegram ID" из старой истории
+        context_prefix = (
+            "ВАЖНО: мой Telegram ID уже известен системе и доступен в контексте. "
+            "Никогда не проси Telegram ID. Если нужен ID для инструмента — не передавай его явно. "
+            "Для текущей даты используй get_current_datetime."
+        )
+        agent_input = f"{context_prefix}\n\nСообщение пользователя: {user_message}"
         
         logger.info(f"Вызываю agent.arun() для пользователя {user_id_str}, сессия {session_id}")
         response = await agent.arun(
-            user_message,
+            agent_input,
             user_id=user_id_str,
             session_id=session_id,
         )
@@ -145,6 +169,12 @@ async def handle_message(
             f"Попробуй еще раз или обратись к администратору. "
             f"(Ошибка: {error_type})"
         )
+    finally:
+        # Сбрасываем контекст tg id для текущей asyncio-задачи
+        try:
+            _reset_current_telegram_id(token)
+        except Exception:
+            pass
 
 
 async def error_handler(
@@ -174,6 +204,7 @@ def run_bot(agent: Agent) -> None:
     
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("reset", reset_command))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
