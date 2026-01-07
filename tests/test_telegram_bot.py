@@ -5,7 +5,14 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from telegram import Update, Message, Chat, User
 from telegram.ext import ContextTypes
-from telegram_bot import start_command, handle_message, run_bot, error_handler
+from telegram_bot import (
+    start_command, handle_message, run_bot, error_handler,
+    notify_partner_about_event, set_notification_bot, create_notify_callback
+)
+from core_logic.schemas import CalendarEvent, EventStatus, EventCategory
+from core_logic.database import init_database, create_user, get_user_by_telegram_id
+from datetime import datetime
+import pytz
 
 
 @pytest.fixture
@@ -155,4 +162,120 @@ async def test_run_bot_with_token(mock_agent):
             
             # Проверяем, что агент сохранен в bot_data
             assert mock_app.bot_data["agent"] == mock_agent
+
+
+@pytest.mark.asyncio
+async def test_notify_partner_about_event_success():
+    """Тест: успешная отправка уведомления партнеру."""
+    # Настраиваем тестовую БД
+    test_db = "test_family_calendar.db"
+    if os.path.exists(test_db):
+        os.remove(test_db)
+    init_database(test_db)
+    
+    # Создаем пользователей
+    from core_logic.schemas import User
+    creator = User(telegram_id=111, name="Муж", partner_telegram_id=222)
+    partner = User(telegram_id=222, name="Жена", partner_telegram_id=111)
+    create_user(test_db, creator)
+    create_user(test_db, partner)
+    
+    # Создаем событие
+    event = CalendarEvent(
+        id=1,
+        title="секция у сына",
+        datetime=datetime(2026, 1, 10, 10, 0, tzinfo=pytz.timezone("Europe/Moscow")),
+        duration_minutes=60,
+        creator_telegram_id=111,
+        status=EventStatus.PROPOSED,
+        category=EventCategory.CHILDREN,
+    )
+    
+    # Мокаем bot
+    mock_bot = AsyncMock()
+    mock_bot.send_message = AsyncMock()
+    set_notification_bot(mock_bot)
+    
+    # Вызываем функцию уведомления
+    # Временно устанавливаем DB_FILE для теста
+    import core_logic.calendar_tools
+    original_db = core_logic.calendar_tools.DB_FILE
+    core_logic.calendar_tools.DB_FILE = test_db
+    
+    try:
+        result = await notify_partner_about_event(event, 111)
+        
+        # Проверяем, что уведомление отправлено
+        assert result is True
+        mock_bot.send_message.assert_called_once()
+        call_args = mock_bot.send_message.call_args
+        assert call_args[1]["chat_id"] == 222
+        assert "секция у сына" in call_args[1]["text"]
+    finally:
+        core_logic.calendar_tools.DB_FILE = original_db
+        if os.path.exists(test_db):
+            os.remove(test_db)
+
+
+@pytest.mark.asyncio
+async def test_notify_partner_about_event_no_partner():
+    """Тест: уведомление не отправляется, если у пользователя нет партнера."""
+    test_db = "test_family_calendar.db"
+    if os.path.exists(test_db):
+        os.remove(test_db)
+    init_database(test_db)
+    
+    # Создаем пользователя без партнера
+    from core_logic.schemas import User
+    creator = User(telegram_id=111, name="Муж", partner_telegram_id=None)
+    create_user(test_db, creator)
+    
+    event = CalendarEvent(
+        id=1,
+        title="секция у сына",
+        datetime=datetime(2026, 1, 10, 10, 0, tzinfo=pytz.timezone("Europe/Moscow")),
+        duration_minutes=60,
+        creator_telegram_id=111,
+        status=EventStatus.PROPOSED,
+        category=EventCategory.CHILDREN,
+    )
+    
+    mock_bot = AsyncMock()
+    set_notification_bot(mock_bot)
+    
+    import core_logic.calendar_tools
+    original_db = core_logic.calendar_tools.DB_FILE
+    core_logic.calendar_tools.DB_FILE = test_db
+    
+    try:
+        result = await notify_partner_about_event(event, 111)
+        
+        # Уведомление не должно быть отправлено
+        assert result is True  # Функция возвращает True, но сообщение не отправлено
+        mock_bot.send_message.assert_not_called()
+    finally:
+        core_logic.calendar_tools.DB_FILE = original_db
+        if os.path.exists(test_db):
+            os.remove(test_db)
+
+
+@pytest.mark.asyncio
+async def test_notify_partner_about_event_no_bot():
+    """Тест: уведомление не отправляется, если bot не установлен."""
+    set_notification_bot(None)
+    
+    event = CalendarEvent(
+        id=1,
+        title="секция у сына",
+        datetime=datetime(2026, 1, 10, 10, 0, tzinfo=pytz.timezone("Europe/Moscow")),
+        duration_minutes=60,
+        creator_telegram_id=111,
+        status=EventStatus.PROPOSED,
+        category=EventCategory.CHILDREN,
+    )
+    
+    result = await notify_partner_about_event(event, 111)
+    
+    # Должно вернуть False
+    assert result is False
 

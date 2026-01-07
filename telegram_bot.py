@@ -2,7 +2,7 @@
 
 import os
 import logging
-from typing import Optional
+from typing import Optional, Any, Callable
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
@@ -14,11 +14,17 @@ from telegram.ext import (
 )
 from agno.agent import Agent
 from agents_wrappers import _set_current_telegram_id, _reset_current_telegram_id
+from core_logic.schemas import CalendarEvent
+from core_logic.database import get_user_by_telegram_id, mark_partner_notified
+from core_logic.calendar_tools import DB_FILE, set_notify_partner_callback
 
 load_dotenv()
 
 # Логирование уже настроено в main.py, просто получаем logger
 logger = logging.getLogger(__name__)
+
+# Глобальная переменная для хранения bot instance для отправки уведомлений
+_notification_bot: Optional[Any] = None
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -184,6 +190,117 @@ async def error_handler(
     logger.error(f"Ошибка: {context.error}", exc_info=True)
 
 
+async def notify_partner_about_event(
+    event: CalendarEvent,
+    creator_telegram_id: int,
+) -> bool:
+    """
+    Уведомляет партнера о новом событии.
+    
+    Args:
+        event: Созданное событие
+        creator_telegram_id: Telegram ID создателя события
+    
+    Returns:
+        True если уведомление отправлено успешно, False в противном случае
+    """
+    global _notification_bot
+    
+    if _notification_bot is None:
+        logger.warning("Bot instance не установлен, уведомление не отправлено")
+        return False
+    
+    try:
+        # Получаем информацию о создателе
+        creator = get_user_by_telegram_id(DB_FILE, creator_telegram_id)
+        if not creator:
+            logger.warning(f"Пользователь с telegram_id={creator_telegram_id} не найден")
+            return False
+        
+        # Проверяем наличие партнера
+        if not creator.partner_telegram_id:
+            logger.info(f"У пользователя {creator.name} нет партнера, уведомление не требуется")
+            return False
+        
+        # Формируем сообщение в спокойном тоне
+        # Используем имя создателя
+        creator_name = creator.name
+        
+        # Форматируем дату и время
+        event_datetime = event.datetime
+        weekday_names = [
+            "понедельник", "вторник", "среда", "четверг",
+            "пятница", "суббота", "воскресенье"
+        ]
+        weekday = weekday_names[event_datetime.weekday()]
+        time_str = event_datetime.strftime("%H:%M")
+        
+        # Формируем сообщение
+        message = f"{creator_name} занял(а) {weekday} {time_str}: {event.title}"
+        
+        # Отправляем сообщение партнеру
+        try:
+            await _notification_bot.send_message(
+                chat_id=creator.partner_telegram_id,
+                text=message
+            )
+            logger.info(f"Уведомление отправлено партнеру {creator.partner_telegram_id} о событии {event.id}")
+            
+            # Устанавливаем флаг уведомления в БД
+            if event.id:
+                mark_partner_notified(DB_FILE, event.id)
+            
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при отправке уведомления партнеру: {e}", exc_info=True)
+            return False
+            
+    except Exception as e:
+        logger.error(f"Ошибка при уведомлении партнера: {e}", exc_info=True)
+        return False
+
+
+def set_notification_bot(bot: Any) -> None:
+    """
+    Устанавливает bot instance для отправки уведомлений.
+    
+    Args:
+        bot: Экземпляр Telegram Bot для отправки сообщений
+    """
+    global _notification_bot
+    _notification_bot = bot
+    logger.info("Bot instance установлен для уведомлений")
+
+
+def create_notify_callback() -> Optional[Callable[[CalendarEvent, int], None]]:
+    """
+    Создает callback функцию для уведомления партнера.
+    Возвращает синхронную функцию, которая вызывает async notify_partner_about_event.
+    
+    Returns:
+        Callback функция или None, если bot не установлен
+    """
+    import asyncio
+    
+    def notify_callback(event: CalendarEvent, creator_telegram_id: int) -> None:
+        """
+        Синхронная обертка для async notify_partner_about_event.
+        """
+        try:
+            # Проверяем, есть ли активный event loop
+            try:
+                loop = asyncio.get_running_loop()
+                # Если loop уже запущен, создаем задачу (fire and forget)
+                asyncio.create_task(notify_partner_about_event(event, creator_telegram_id))
+            except RuntimeError:
+                # Если нет активного event loop, создаем новый
+                asyncio.run(notify_partner_about_event(event, creator_telegram_id))
+        except Exception as e:
+            logger.error(f"Ошибка в callback уведомления: {e}", exc_info=True)
+    
+    return notify_callback
+
+
 def run_bot(agent: Agent) -> None:
     """
     Запускает Telegram бота.
@@ -201,6 +318,13 @@ def run_bot(agent: Agent) -> None:
     
     # Сохраняем агента в bot_data для доступа из handlers
     application.bot_data["agent"] = agent
+    
+    # Устанавливаем bot instance для уведомлений
+    set_notification_bot(application.bot)
+    
+    # Регистрируем callback для уведомлений партнера
+    notify_callback = create_notify_callback()
+    set_notify_partner_callback(notify_callback)
     
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start_command))

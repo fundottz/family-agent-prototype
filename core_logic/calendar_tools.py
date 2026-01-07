@@ -2,7 +2,7 @@
 
 import os
 from datetime import datetime, date, timedelta
-from typing import List, Optional
+from typing import List, Optional, Callable, Any
 import pytz
 
 from .schemas import (
@@ -27,6 +27,20 @@ DEFAULT_TIMEZONE = pytz.timezone("Europe/Moscow")
 
 # Получаем путь к БД из переменной окружения
 DB_FILE = os.getenv("DB_FILE", "family_calendar.db")
+
+# Глобальная переменная для callback уведомлений партнера
+_notify_partner_callback: Optional[Callable[[CalendarEvent, int], Any]] = None
+
+
+def set_notify_partner_callback(callback: Optional[Callable[[CalendarEvent, int], Any]]) -> None:
+    """
+    Устанавливает callback функцию для уведомления партнера.
+    
+    Args:
+        callback: Функция, которая принимает (event: CalendarEvent, creator_telegram_id: int)
+    """
+    global _notify_partner_callback
+    _notify_partner_callback = callback
 
 
 def check_availability(
@@ -61,6 +75,8 @@ def check_availability(
 def schedule_event(
     event: CalendarEvent,
     participant_scope: str = "self",
+    notify_partner: bool = True,
+    notify_callback: Optional[Callable[[CalendarEvent, int], Any]] = None,
 ) -> ScheduleResult:
     """
     Создает событие в календаре.
@@ -71,6 +87,9 @@ def schedule_event(
     Args:
         event: Объект CalendarEvent с данными события
         participant_scope: 'self' или 'both' — как заполнять таблицу участников (информативно).
+        notify_partner: Если True, отправляет уведомление партнеру (требует notify_callback)
+        notify_callback: Опциональная функция для уведомления партнера. 
+                        Должна принимать (event: CalendarEvent, creator_telegram_id: int)
     
     Returns:
         ScheduleResult с результатом создания события
@@ -111,6 +130,22 @@ def schedule_event(
             user = get_user_by_telegram_id(DB_FILE, participant_telegram_id)
             if user and user.id:
                 add_event_participant(DB_FILE, event_id, user.id)
+        
+        # Обновляем event с полученным id
+        event.id = event_id
+        
+        # Отправляем уведомление партнеру, если требуется
+        # Используем переданный callback или глобальный callback
+        callback_to_use = notify_callback or _notify_partner_callback
+        if notify_partner and callback_to_use:
+            try:
+                callback_to_use(event, event.creator_telegram_id)
+            except Exception as e:
+                # Логируем ошибку, но не блокируем создание события
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Ошибка при уведомлении партнера: {e}"
+                )
         
         return ScheduleResult(
             success=True,

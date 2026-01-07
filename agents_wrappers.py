@@ -19,6 +19,7 @@ from core_logic.calendar_tools import (
     check_availability as _check_availability,
     schedule_event as _schedule_event,
     get_today_agenda as _get_today_agenda,
+    set_notify_partner_callback,
 )
 from core_logic.schemas import (
     CalendarEvent,
@@ -138,6 +139,7 @@ def schedule_event(
     category: str = Field(...),
     status: str = Field(default="предложено"),
     participant_scope: str = Field(default="self"),
+    notify_partner: bool = Field(default=True),
     creator_telegram_id: Optional[int] = Field(default=None),
 ) -> ScheduleResult:
     """
@@ -150,6 +152,7 @@ def schedule_event(
     - category: one of {'дети','дом','ремонт','личное'}
     - status: one of {'предложено','подтверждено'} (по умолчанию 'предложено')
     - participant_scope: 'self'|'both' (информативно, по умолчанию 'self')
+    - notify_partner: bool (по умолчанию True) - отправлять ли уведомление партнеру
     - creator_telegram_id: автоматически берется из контекста, не передавай явно
     
     Общий календарь: событие блокирует слот времени для всех.
@@ -162,6 +165,7 @@ def schedule_event(
         category: Категория события
         status: Статус события (по умолчанию 'предложено')
         participant_scope: 'self' или 'both' (по умолчанию 'self')
+        notify_partner: Отправлять ли уведомление партнеру (по умолчанию True)
         creator_telegram_id: Автоматически берется из контекста, не передавай явно
     
     Returns:
@@ -198,7 +202,7 @@ def schedule_event(
         category=event_category,
     )
     
-    return _schedule_event(event, participant_scope)
+    return _schedule_event(event, participant_scope, notify_partner=notify_partner)
 
 
 def get_today_agenda(

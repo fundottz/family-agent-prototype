@@ -1,5 +1,5 @@
 ---
-alwaysApply: true
+alwaysApply: false
 ---
 You are an expert in Python, Agno framework, and AI agent development.
 
