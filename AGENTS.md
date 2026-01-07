@@ -1,0 +1,7 @@
+# Project Instructions
+
+## Overall guidelines
+- Always ask to confirm understanding of tasks first.
+- Always provide a complete PLAN with REASONING before making changes. Don't start coding until the plan is clear/approved
+- When task is done ask to make documentation up-to-date
+- Always run application when the whole task is done to check if it's runnable and compiles correctly
