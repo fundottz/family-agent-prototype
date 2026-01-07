@@ -3,7 +3,7 @@
 import sqlite3
 import logging
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, List
 import pytz
 
@@ -663,6 +663,215 @@ def update_event_status(db_file: str, event_id: int, status: EventStatus) -> boo
         except sqlite3.Error as e:
             logger.error(f"Ошибка при обновлении статуса события: {e}")
             raise
+
+
+def update_event(db_file: str, event_id: int, updates: dict) -> bool:
+    """
+    Обновляет поля события.
+    
+    Args:
+        db_file: Путь к файлу базы данных
+        event_id: ID события
+        updates: Словарь с полями для обновления. Поддерживаемые ключи:
+                 - title: str
+                 - datetime: datetime
+                 - duration_minutes: int
+                 - category: EventCategory или str
+                 - status: EventStatus или str
+                 - partner_notified: bool
+    
+    Returns:
+        True если обновление успешно
+    
+    Raises:
+        ValueError: Если event_id невалиден или updates пуст
+        sqlite3.Error: При ошибке БД
+    """
+    if not event_id or event_id <= 0:
+        raise ValueError("event_id должен быть положительным числом")
+    if not updates:
+        raise ValueError("updates не может быть пустым")
+    
+    # Разрешенные поля для обновления
+    allowed_fields = {'title', 'datetime', 'duration_minutes', 'category', 'status', 'partner_notified'}
+    
+    # Формируем SET часть запроса
+    set_parts = []
+    params = []
+    
+    for key, value in updates.items():
+        if key not in allowed_fields:
+            raise ValueError(f"Поле '{key}' не может быть обновлено")
+        
+        if key == 'title':
+            if not value or not str(value).strip():
+                raise ValueError("title не может быть пустым")
+            set_parts.append("title = ?")
+            params.append(str(value).strip())
+        
+        elif key == 'datetime':
+            if not isinstance(value, datetime):
+                raise ValueError("datetime должен быть объектом datetime")
+            set_parts.append("datetime = ?")
+            params.append(_to_utc_iso(value))
+        
+        elif key == 'duration_minutes':
+            if not isinstance(value, int) or value <= 0:
+                raise ValueError("duration_minutes должен быть положительным числом")
+            set_parts.append("duration_minutes = ?")
+            params.append(value)
+        
+        elif key == 'category':
+            if isinstance(value, EventCategory):
+                category_value = value.value
+            elif isinstance(value, str):
+                category_value = value
+            else:
+                raise ValueError("category должен быть EventCategory или str")
+            set_parts.append("category = ?")
+            params.append(category_value)
+        
+        elif key == 'status':
+            if isinstance(value, EventStatus):
+                status_value = value.value
+            elif isinstance(value, str):
+                status_value = value
+            else:
+                raise ValueError("status должен быть EventStatus или str")
+            set_parts.append("status = ?")
+            params.append(status_value)
+        
+        elif key == 'partner_notified':
+            set_parts.append("partner_notified = ?")
+            params.append(1 if value else 0)
+    
+    if not set_parts:
+        raise ValueError("Нет полей для обновления")
+    
+    # Добавляем event_id в конец параметров
+    params.append(event_id)
+    
+    with db_connection(db_file) as conn:
+        cursor = conn.cursor()
+        try:
+            query = f"""
+                UPDATE events
+                SET {', '.join(set_parts)}
+                WHERE id = ?
+            """
+            cursor.execute(query, params)
+            conn.commit()
+            updated = cursor.rowcount > 0
+            if updated:
+                logger.info(f"Обновлено событие {event_id}: {', '.join(updates.keys())}")
+            return updated
+        except sqlite3.Error as e:
+            logger.error(f"Ошибка при обновлении события: {e}")
+            raise
+
+
+def delete_event(db_file: str, event_id: int) -> bool:
+    """
+    Удаляет событие из базы данных.
+    
+    Args:
+        db_file: Путь к файлу базы данных
+        event_id: ID события
+    
+    Returns:
+        True если удаление успешно
+    
+    Raises:
+        ValueError: Если event_id невалиден
+        sqlite3.Error: При ошибке БД
+    """
+    if not event_id or event_id <= 0:
+        raise ValueError("event_id должен быть положительным числом")
+    
+    with db_connection(db_file) as conn:
+        cursor = conn.cursor()
+        try:
+            # Удаляем участников события (CASCADE должен сработать, но делаем явно)
+            cursor.execute("DELETE FROM event_participants WHERE event_id = ?", (event_id,))
+            
+            # Удаляем само событие
+            cursor.execute("DELETE FROM events WHERE id = ?", (event_id,))
+            conn.commit()
+            deleted = cursor.rowcount > 0
+            if deleted:
+                logger.info(f"Удалено событие {event_id}")
+            return deleted
+        except sqlite3.Error as e:
+            logger.error(f"Ошибка при удалении события: {e}")
+            raise
+
+
+def get_events_by_creator_in_range(
+    db_file: str,
+    creator_telegram_id: int,
+    start_date: date,
+    end_date: date
+) -> List[CalendarEvent]:
+    """
+    Получает события создателя за указанный период (по датам).
+    
+    Args:
+        db_file: Путь к файлу базы данных
+        creator_telegram_id: Telegram ID создателя события
+        start_date: Начальная дата (включительно)
+        end_date: Конечная дата (включительно)
+    
+    Returns:
+        Список событий создателя за период
+    
+    Raises:
+        ValueError: Если параметры невалидны
+    """
+    if not creator_telegram_id or creator_telegram_id <= 0:
+        raise ValueError("creator_telegram_id должен быть положительным числом")
+    if not start_date or not end_date:
+        raise ValueError("start_date и end_date обязательны")
+    if start_date > end_date:
+        raise ValueError("start_date не может быть позже end_date")
+    
+    # Преобразуем date в datetime для начала и конца дня
+    start_datetime = DEFAULT_TIMEZONE.localize(
+        datetime.combine(start_date, datetime.min.time())
+    )
+    end_datetime = DEFAULT_TIMEZONE.localize(
+        datetime.combine(end_date, datetime.max.time())
+    )
+    
+    with db_connection(db_file) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, title, datetime, duration_minutes, creator_telegram_id,
+                   status, category, created_at, partner_notified
+            FROM events
+            WHERE creator_telegram_id = ?
+            AND datetime >= ? AND datetime <= ?
+            ORDER BY datetime ASC
+        """, (
+            creator_telegram_id,
+            _to_utc_iso(start_datetime),
+            _to_utc_iso(end_datetime)
+        ))
+        
+        events = []
+        for row in cursor.fetchall():
+            events.append(CalendarEvent(
+                id=row['id'],
+                title=row['title'],
+                datetime=_from_utc_iso(row['datetime']),
+                duration_minutes=row['duration_minutes'],
+                creator_telegram_id=row['creator_telegram_id'],
+                status=EventStatus(row['status']),
+                category=EventCategory(row['category']),
+                created_at=_from_utc_iso(row['created_at']) if row['created_at'] else None,
+                partner_notified=bool(row['partner_notified'])
+            ))
+        
+        return events
 
 
 def mark_partner_notified(db_file: str, event_id: int) -> bool:

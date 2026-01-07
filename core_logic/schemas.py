@@ -10,6 +10,7 @@ class EventStatus(str, Enum):
     """Статус события."""
     PROPOSED = "предложено"
     CONFIRMED = "подтверждено"
+    REJECTED = "отклонено"
 
 
 class EventCategory(str, Enum):
