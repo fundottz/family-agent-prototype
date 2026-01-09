@@ -35,6 +35,7 @@ DB_FILE = os.getenv("DB_FILE", "data/family_calendar.db")
 # Глобальная переменная для callback уведомлений партнера
 _notify_partner_callback: Optional[Callable[[CalendarEvent, int], Any]] = None
 _notify_partner_cancellation_callback: Optional[Callable[[List[CalendarEvent], int], Any]] = None
+_notify_partner_changes_callback: Optional[Callable[[List[CalendarEvent], int], Any]] = None
 
 
 def set_notify_partner_callback(callback: Optional[Callable[[CalendarEvent, int], Any]]) -> None:
@@ -57,6 +58,17 @@ def set_notify_partner_cancellation_callback(callback: Optional[Callable[[List[C
     """
     global _notify_partner_cancellation_callback
     _notify_partner_cancellation_callback = callback
+
+
+def set_notify_partner_changes_callback(callback: Optional[Callable[[List[CalendarEvent], int], Any]]) -> None:
+    """
+    Устанавливает callback функцию для уведомления партнера об изменениях в событиях.
+    
+    Args:
+        callback: Функция, которая принимает (events: List[CalendarEvent], creator_telegram_id: int)
+    """
+    global _notify_partner_changes_callback
+    _notify_partner_changes_callback = callback
 
 
 def check_availability(
@@ -360,3 +372,26 @@ def cancel_events(
         failed_event_ids=failed_ids,
         message=message
     )
+
+
+def notify_partner_about_event_changes_helper(
+    events: List[CalendarEvent],
+    creator_telegram_id: int,
+) -> None:
+    """
+    Вспомогательная функция для уведомления партнера об изменениях в событиях.
+    Вызывает callback, если он установлен.
+    
+    Args:
+        events: Список измененных событий
+        creator_telegram_id: Telegram ID создателя событий
+    """
+    global _notify_partner_changes_callback
+    if _notify_partner_changes_callback:
+        try:
+            _notify_partner_changes_callback(events, creator_telegram_id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Ошибка при уведомлении партнера об изменениях: {e}"
+            )

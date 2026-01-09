@@ -17,7 +17,7 @@ from agno.agent import Agent
 from agents_wrappers import _set_current_telegram_id, _reset_current_telegram_id
 from core_logic.schemas import CalendarEvent
 from core_logic.database import get_user_by_telegram_id, mark_partner_notified
-from core_logic.calendar_tools import DB_FILE, set_notify_partner_callback, set_notify_partner_cancellation_callback
+from core_logic.calendar_tools import DB_FILE, set_notify_partner_callback, set_notify_partner_cancellation_callback, set_notify_partner_changes_callback
 
 load_dotenv()
 
@@ -438,6 +438,35 @@ def create_notify_cancellation_callback() -> Optional[Callable[[List[CalendarEve
     return notify_cancellation_callback
 
 
+def create_notify_changes_callback() -> Optional[Callable[[List[CalendarEvent], int], None]]:
+    """
+    Создает callback функцию для уведомления партнера об изменениях в событиях.
+    Возвращает синхронную функцию, которая вызывает async notify_partner_about_event_changes.
+    
+    Returns:
+        Callback функция или None, если bot не установлен
+    """
+    import asyncio
+    
+    def notify_changes_callback(events: List[CalendarEvent], creator_telegram_id: int) -> None:
+        """
+        Синхронная обертка для async notify_partner_about_event_changes.
+        """
+        try:
+            # Проверяем, есть ли активный event loop
+            try:
+                loop = asyncio.get_running_loop()
+                # Если loop уже запущен, создаем задачу (fire and forget)
+                asyncio.create_task(notify_partner_about_event_changes(events, creator_telegram_id, action="изменил(а)"))
+            except RuntimeError:
+                # Если нет активного event loop, создаем новый
+                asyncio.run(notify_partner_about_event_changes(events, creator_telegram_id, action="изменил(а)"))
+        except Exception as e:
+            logger.error(f"Ошибка в callback уведомления об изменениях: {e}", exc_info=True)
+    
+    return notify_changes_callback
+
+
 def run_bot(agent: Agent) -> None:
     """
     Запускает Telegram бота.
@@ -466,6 +495,10 @@ def run_bot(agent: Agent) -> None:
     # Регистрируем callback для уведомлений об отмене
     notify_cancellation_callback = create_notify_cancellation_callback()
     set_notify_partner_cancellation_callback(notify_cancellation_callback)
+    
+    # Регистрируем callback для уведомлений об изменениях
+    notify_changes_callback = create_notify_changes_callback()
+    set_notify_partner_changes_callback(notify_changes_callback)
     
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start_command))

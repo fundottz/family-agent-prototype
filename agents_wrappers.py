@@ -22,6 +22,7 @@ from core_logic.calendar_tools import (
     set_notify_partner_callback,
     cancel_events as _cancel_events,
     find_events_to_cancel as _find_events_to_cancel,
+    notify_partner_about_event_changes_helper,
     DB_FILE,
 )
 from core_logic.database import (
@@ -395,6 +396,17 @@ def update_event(
     try:
         success = _update_event_db(DB_FILE, event_id, updates)
         if success:
+            # Получаем обновленное событие для уведомления партнера
+            updated_event = get_event_by_id(DB_FILE, event_id)
+            if updated_event:
+                # Отправляем уведомление партнеру об изменении события
+                # Оборачиваем в список, так как callback принимает List[CalendarEvent]
+                try:
+                    notify_partner_about_event_changes_helper([updated_event], creator_telegram_id)
+                except Exception as notify_error:
+                    # Логируем ошибку, но не блокируем успешное обновление
+                    logger.warning(f"Ошибка при уведомлении партнера об изменении события: {notify_error}")
+            
             return UpdateResult(
                 success=True,
                 event_id=event_id,
