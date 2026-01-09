@@ -1,0 +1,22 @@
+{
+  "users": [
+    {
+      "telegram_id": 123551875,
+      "name": "Андрей",
+      "partner_telegram_id": 134247673
+    },
+    {
+      "telegram_id": 5769174260,
+      "name": "Тоня (тест)",
+      "partner_telegram_id": 123551875,
+      "digest_time": "07:00"
+    },
+    {
+      "telegram_id": 134247673,
+      "name": "Тоня",
+      "partner_telegram_id": 123551875,
+      "digest_time": "07:00"
+    }
+  ]
+}
+

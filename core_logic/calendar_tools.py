@@ -30,7 +30,7 @@ from .database import (
 DEFAULT_TIMEZONE = pytz.timezone("Europe/Moscow")
 
 # Получаем путь к БД из переменной окружения
-DB_FILE = os.getenv("DB_FILE", "family_calendar.db")
+DB_FILE = os.getenv("DB_FILE", "data/family_calendar.db")
 
 # Глобальная переменная для callback уведомлений партнера
 _notify_partner_callback: Optional[Callable[[CalendarEvent, int], Any]] = None

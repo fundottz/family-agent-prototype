@@ -9,7 +9,7 @@ from core_logic.schemas import User
 
 load_dotenv()
 
-DB_FILE = os.getenv("DB_FILE", "family_calendar.db")
+DB_FILE = os.getenv("DB_FILE", "data/family_calendar.db")
 
 
 def create_users(telegram_id_1: int, name_1: str, telegram_id_2: int, name_2: str):

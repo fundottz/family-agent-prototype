@@ -7,7 +7,7 @@ from agno.agent import Agent
 from agno.models.deepseek import DeepSeek
 from agno.db.sqlite import SqliteDb
 from telegram_bot import run_bot
-from core_logic.database import init_database
+from core_logic.database import init_database, load_default_users
 from agents_wrappers import (
     check_availability,
     schedule_event,
@@ -39,11 +39,20 @@ def create_family_planner_agent() -> Agent:
         raise ValueError("DEEPSEEK_API_KEY must be set in .env file")
     
     # Используем SQLite для разработки
-    db_file = os.getenv("DB_FILE", "family_calendar.db")
+    db_file = os.getenv("DB_FILE", "data/family_calendar.db")
     logger.info(f"Используется SQLite база данных: {db_file}")
+    
+    # Создаем директорию data, если её нет
+    db_dir = os.path.dirname(db_file)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir, exist_ok=True)
+        logger.info(f"Создана директория: {db_dir}")
     
     # Инициализируем базу данных (создаем таблицы, если их нет)
     init_database(db_file)
+    
+    # Загружаем дефолтных пользователей, если таблица пуста
+    load_default_users(db_file)
 
     # Создаем агента с DeepSeek моделью
     # Используем специальный класс DeepSeek вместо OpenAIChat

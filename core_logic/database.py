@@ -301,6 +301,87 @@ def update_user(db_file: str, user: User) -> bool:
 
 # ==================== Работа с событиями ====================
 
+def count_users(db_file: str) -> int:
+    """
+    Подсчитывает количество пользователей в базе данных.
+    
+    Args:
+        db_file: Путь к файлу базы данных
+    
+    Returns:
+        Количество пользователей
+    """
+    with db_connection(db_file) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM users")
+        count = cursor.fetchone()[0]
+        return count
+
+
+def load_default_users(db_file: str, config_path: str = "config/users.json") -> None:
+    """
+    Загружает дефолтных пользователей из конфиг-файла, если таблица users пуста.
+    
+    Args:
+        db_file: Путь к файлу базы данных
+        config_path: Путь к конфиг-файлу с дефолтными пользователями
+    """
+    import json
+    import os
+    
+    # Проверяем количество пользователей
+    user_count = count_users(db_file)
+    if user_count > 0:
+        logger.info(f"В базе данных уже есть {user_count} пользователь(ей), пропускаем загрузку дефолтных")
+        return
+    
+    # Проверяем существование конфиг-файла
+    if not os.path.exists(config_path):
+        logger.warning(f"Конфиг-файл {config_path} не найден, пропускаем загрузку дефолтных пользователей")
+        return
+    
+    try:
+        # Загружаем конфиг
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        
+        # Извлекаем массив пользователей
+        users_data = config.get('users', [])
+        if not users_data:
+            logger.warning(f"Конфиг-файл {config_path} не содержит пользователей")
+            return
+        
+        logger.info(f"Загружаем {len(users_data)} дефолтных пользователей из {config_path}")
+        
+        # Создаем пользователей
+        created_count = 0
+        for user_data in users_data:
+            try:
+                # Используем дефолтное значение digest_time, если не указано
+                digest_time = user_data.get('digest_time', '07:00')
+                
+                user = User(
+                    telegram_id=user_data['telegram_id'],
+                    name=user_data['name'],
+                    partner_telegram_id=user_data.get('partner_telegram_id'),
+                    digest_time=digest_time
+                )
+                
+                create_user(db_file, user)
+                created_count += 1
+                logger.info(f"Создан дефолтный пользователь: {user.name} (telegram_id: {user.telegram_id})")
+            except Exception as e:
+                logger.error(f"Ошибка при создании пользователя {user_data.get('name', 'unknown')}: {e}")
+        
+        logger.info(f"Успешно загружено {created_count} дефолтных пользователей")
+    except json.JSONDecodeError as e:
+        logger.error(f"Ошибка при парсинге JSON файла {config_path}: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке дефолтных пользователей: {e}", exc_info=True)
+
+
+
+
 def create_event(db_file: str, event: CalendarEvent) -> int:
     """
     Создает новое событие в базе данных.
