@@ -32,43 +32,89 @@ DEFAULT_TIMEZONE = pytz.timezone("Europe/Moscow")
 # Получаем путь к БД из переменной окружения
 DB_FILE = os.getenv("DB_FILE", "data/family_calendar.db")
 
-# Глобальная переменная для callback уведомлений партнера
-_notify_partner_callback: Optional[Callable[[CalendarEvent, int], Any]] = None
-_notify_partner_cancellation_callback: Optional[Callable[[List[CalendarEvent], int], Any]] = None
-_notify_partner_changes_callback: Optional[Callable[[List[CalendarEvent], int], Any]] = None
+# Импортируем NotificationService для единого механизма уведомлений
+from .notification_service import NotificationService, NotificationType, get_notification_service
+
+# Глобальная переменная для единого callback уведомлений
+_notification_callback: Optional[Callable[[List[CalendarEvent], int, NotificationType], Any]] = None
 
 
+def set_notification_callback(callback: Optional[Callable[[List[CalendarEvent], int, NotificationType], Any]]) -> None:
+    """
+    Устанавливает единый callback функцию для всех типов уведомлений партнера.
+    
+    Args:
+        callback: Функция, которая принимает (events: List[CalendarEvent], creator_telegram_id: int, notification_type: NotificationType)
+    """
+    global _notification_callback
+    _notification_callback = callback
+    # Устанавливаем callback в NotificationService
+    notification_service = get_notification_service()
+    notification_service.set_callback(callback)
+
+
+# Обратная совместимость: старые функции для отдельных типов уведомлений
 def set_notify_partner_callback(callback: Optional[Callable[[CalendarEvent, int], Any]]) -> None:
     """
-    Устанавливает callback функцию для уведомления партнера.
+    Устанавливает callback функцию для уведомления партнера о создании события.
+    
+    УСТАРЕЛО: Используйте set_notification_callback для унифицированного подхода.
     
     Args:
         callback: Функция, которая принимает (event: CalendarEvent, creator_telegram_id: int)
     """
-    global _notify_partner_callback
-    _notify_partner_callback = callback
+    if callback is None:
+        set_notification_callback(None)
+        return
+    
+    # Обертка для обратной совместимости
+    def wrapper(events: List[CalendarEvent], creator_telegram_id: int, notification_type: NotificationType) -> None:
+        if notification_type == NotificationType.CREATED and events:
+            callback(events[0], creator_telegram_id)
+    
+    set_notification_callback(wrapper)
 
 
 def set_notify_partner_cancellation_callback(callback: Optional[Callable[[List[CalendarEvent], int], Any]]) -> None:
     """
     Устанавливает callback функцию для уведомления партнера об отмене событий.
     
+    УСТАРЕЛО: Используйте set_notification_callback для унифицированного подхода.
+    
     Args:
         callback: Функция, которая принимает (events: List[CalendarEvent], creator_telegram_id: int)
     """
-    global _notify_partner_cancellation_callback
-    _notify_partner_cancellation_callback = callback
+    if callback is None:
+        set_notification_callback(None)
+        return
+    
+    # Обертка для обратной совместимости
+    def wrapper(events: List[CalendarEvent], creator_telegram_id: int, notification_type: NotificationType) -> None:
+        if notification_type == NotificationType.CANCELLED:
+            callback(events, creator_telegram_id)
+    
+    set_notification_callback(wrapper)
 
 
 def set_notify_partner_changes_callback(callback: Optional[Callable[[List[CalendarEvent], int], Any]]) -> None:
     """
     Устанавливает callback функцию для уведомления партнера об изменениях в событиях.
     
+    УСТАРЕЛО: Используйте set_notification_callback для унифицированного подхода.
+    
     Args:
         callback: Функция, которая принимает (events: List[CalendarEvent], creator_telegram_id: int)
     """
-    global _notify_partner_changes_callback
-    _notify_partner_changes_callback = callback
+    if callback is None:
+        set_notification_callback(None)
+        return
+    
+    # Обертка для обратной совместимости
+    def wrapper(events: List[CalendarEvent], creator_telegram_id: int, notification_type: NotificationType) -> None:
+        if notification_type == NotificationType.UPDATED:
+            callback(events, creator_telegram_id)
+    
+    set_notification_callback(wrapper)
 
 
 def check_availability(
@@ -163,11 +209,16 @@ def schedule_event(
         event.id = event_id
         
         # Отправляем уведомление партнеру, если требуется
-        # Используем переданный callback или глобальный callback
-        callback_to_use = notify_callback or _notify_partner_callback
-        if notify_partner and callback_to_use:
+        if notify_partner:
             try:
-                callback_to_use(event, event.creator_telegram_id)
+                notification_service = get_notification_service()
+                # Вызываем через asyncio для async функции
+                import asyncio
+                try:
+                    loop = asyncio.get_running_loop()
+                    asyncio.create_task(notification_service.notify_event_created(event, event.creator_telegram_id))
+                except RuntimeError:
+                    asyncio.run(notification_service.notify_event_created(event, event.creator_telegram_id))
             except Exception as e:
                 # Логируем ошибку, но не блокируем создание события
                 import logging
@@ -346,9 +397,16 @@ def cancel_events(
             failed_ids.append(event_id)
     
     # Отправляем уведомление партнеру, если требуется
-    if notify_partner and cancelled_events and _notify_partner_cancellation_callback:
+    if notify_partner and cancelled_events:
         try:
-            _notify_partner_cancellation_callback(cancelled_events, creator_telegram_id)
+            notification_service = get_notification_service()
+            # Вызываем через asyncio для async функции
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                asyncio.create_task(notification_service.notify_events_cancelled(cancelled_events, creator_telegram_id))
+            except RuntimeError:
+                asyncio.run(notification_service.notify_events_cancelled(cancelled_events, creator_telegram_id))
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(
@@ -380,18 +438,23 @@ def notify_partner_about_event_changes_helper(
 ) -> None:
     """
     Вспомогательная функция для уведомления партнера об изменениях в событиях.
-    Вызывает callback, если он установлен.
+    Использует NotificationService.
     
     Args:
         events: Список измененных событий
         creator_telegram_id: Telegram ID создателя событий
     """
-    global _notify_partner_changes_callback
-    if _notify_partner_changes_callback:
+    try:
+        notification_service = get_notification_service()
+        # Вызываем через asyncio для async функции
+        import asyncio
         try:
-            _notify_partner_changes_callback(events, creator_telegram_id)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
-                f"Ошибка при уведомлении партнера об изменениях: {e}"
-            )
+            loop = asyncio.get_running_loop()
+            asyncio.create_task(notification_service.notify_events_updated(events, creator_telegram_id))
+        except RuntimeError:
+            asyncio.run(notification_service.notify_events_updated(events, creator_telegram_id))
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Ошибка при уведомлении партнера об изменениях: {e}"
+        )
