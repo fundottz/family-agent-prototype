@@ -276,6 +276,9 @@ def get_agenda(
     resolved_date = None
     if target_date is not None:
         resolved_date = _require_iso_date("target_date", target_date)
+    else:
+        current_dt_info = get_current_datetime()
+        resolved_date = _require_iso_date("target_date", current_dt_info["date_iso"])
     return _get_today_agenda(resolved_date)
 
 
