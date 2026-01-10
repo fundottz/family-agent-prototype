@@ -96,7 +96,6 @@ def create_family_planner_agent() -> Agent:
             base_url="https://api.deepseek.com",
             temperature=0.6,
         ),
-        num_history_runs=5,
         description=AGENT_DESCRIPTION,
         instructions=AGENT_INSTRUCTIONS,
         expected_output=AGENT_EXPECTED_OUTPUT, 
@@ -110,6 +109,8 @@ def create_family_planner_agent() -> Agent:
         # Используем SQLite для хранения истории диалогов
         db=SqliteDb(db_file=db_file),
         add_history_to_context=True,
+        num_history_runs=5,
+        num_history_messages=5,
         add_datetime_to_context=True,
         markdown=False,
         debug_mode=True
