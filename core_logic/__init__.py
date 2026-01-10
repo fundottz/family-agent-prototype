@@ -19,12 +19,8 @@ from .database import (
     update_user,
     create_event,
     get_event_by_id,
-    get_events_by_user,
-    get_conflicting_events,
-    update_event_status,
     mark_partner_notified,
     add_event_participant,
-    get_event_participants,
 )
 
 __all__ = [
@@ -45,10 +41,6 @@ __all__ = [
     "update_user",
     "create_event",
     "get_event_by_id",
-    "get_events_by_user",
-    "get_conflicting_events",
-    "update_event_status",
     "mark_partner_notified",
     "add_event_participant",
-    "get_event_participants",
 ]

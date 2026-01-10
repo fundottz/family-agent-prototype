@@ -6,9 +6,9 @@ from datetime import datetime, date
 import pytz
 
 from core_logic.database import init_database, create_user, create_event, get_user_by_telegram_id
-from core_logic.calendar_tools import get_agenda_for_period
+from core_logic.calendar_tools import get_agenda
 from core_logic.schemas import User, CalendarEvent, EventStatus, EventCategory
-from agents_wrappers import get_agenda_for_period as get_agenda_for_period_wrapper
+from agents_wrappers import get_agenda as get_agenda_wrapper, get_agenda_for_period as get_agenda_for_period_wrapper
 
 DEFAULT_TIMEZONE = pytz.timezone("Europe/Moscow")
 
@@ -45,10 +45,10 @@ def test_user(test_db):
     return user
 
 
-class TestGetAgendaForPeriod:
-    """Тесты для функции get_agenda_for_period()."""
+class TestGetAgenda:
+    """Тесты для функции get_agenda()."""
 
-    def test_get_agenda_for_period_single_day(self, test_db, test_user):
+    def test_get_agenda_single_day(self, test_db, test_user):
         """Тест: получение событий за один день."""
         # Создаем события в разные дни
         event1 = CalendarEvent(
@@ -71,13 +71,13 @@ class TestGetAgendaForPeriod:
         create_event(test_db, event1)
         create_event(test_db, event2)
         
-        # Получаем события за 11 января
-        events = get_agenda_for_period(date(2026, 1, 11), date(2026, 1, 11))
+        # Получаем события за 11 января (один день - end_date не указан)
+        events = get_agenda(date(2026, 1, 11))
         
         assert len(events) == 1
         assert events[0].title == "Событие 2"
 
-    def test_get_agenda_for_period_multiple_days(self, test_db, test_user):
+    def test_get_agenda_multiple_days(self, test_db, test_user):
         """Тест: получение событий за несколько дней."""
         # Создаем события
         for day in range(10, 15):
@@ -92,22 +92,22 @@ class TestGetAgendaForPeriod:
             create_event(test_db, event)
         
         # Получаем события с 11 по 13 января
-        events = get_agenda_for_period(date(2026, 1, 11), date(2026, 1, 13))
+        events = get_agenda(date(2026, 1, 11), date(2026, 1, 13))
         
         assert len(events) == 3
         assert all(e.title in ["Событие 11", "Событие 12", "Событие 13"] for e in events)
 
-    def test_get_agenda_for_period_no_events(self, test_db):
+    def test_get_agenda_no_events(self, test_db):
         """Тест: получение событий, когда их нет."""
-        events = get_agenda_for_period(date(2026, 1, 20), date(2026, 1, 25))
+        events = get_agenda(date(2026, 1, 20), date(2026, 1, 25))
         assert len(events) == 0
 
-    def test_get_agenda_for_period_invalid_dates(self, test_db):
+    def test_get_agenda_invalid_dates(self, test_db):
         """Тест: получение событий с невалидными датами."""
         with pytest.raises(ValueError, match="start_date не может быть позже"):
-            get_agenda_for_period(date(2026, 1, 15), date(2026, 1, 10))
+            get_agenda(date(2026, 1, 15), date(2026, 1, 10))
 
-    def test_get_agenda_for_period_boundary_dates(self, test_db, test_user):
+    def test_get_agenda_boundary_dates(self, test_db, test_user):
         """Тест: получение событий на границах диапазона."""
         # Событие в начале диапазона
         event1 = CalendarEvent(
@@ -143,7 +143,7 @@ class TestGetAgendaForPeriod:
         create_event(test_db, event2)
         create_event(test_db, event3)
         
-        events = get_agenda_for_period(date(2026, 1, 10), date(2026, 1, 15))
+        events = get_agenda(date(2026, 1, 10), date(2026, 1, 15))
         
         assert len(events) == 2
         assert all(e.title in ["Событие начало", "Событие конец"] for e in events)

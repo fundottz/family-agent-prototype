@@ -13,7 +13,6 @@ from core_logic.database import (
     update_event,
     delete_event,
     get_events_by_creator_in_range,
-    update_event_status,
 )
 from core_logic.schemas import (
     User,

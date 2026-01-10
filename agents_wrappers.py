@@ -18,7 +18,7 @@ import pytz
 from core_logic.calendar_tools import (
     check_availability as _check_availability,
     schedule_event as _schedule_event,
-    get_today_agenda as _get_today_agenda,
+    get_agenda as _get_agenda,
     set_notify_partner_callback,
     cancel_events as _cancel_events,
     find_events_to_cancel as _find_events_to_cancel,
@@ -237,12 +237,76 @@ def schedule_event(
     return _schedule_event(event, participant_scope, notify_partner=notify_partner)
 
 
+def get_agenda(
+    start_date: str = Field(...),
+    end_date: Optional[str] = Field(default=None),
+    telegram_id: Optional[int] = Field(default=None),
+) -> List[CalendarEvent]:
+    """
+    Тул для получения повестки общего календаря.
+    
+    Контракт ввода (строго):
+    - start_date: ISO "YYYY-MM-DD" (обязательно, начало периода)
+    - end_date: ISO "YYYY-MM-DD" | None (опционально, конец периода. Если None, то используется start_date - один день)
+    - telegram_id: игнорируется (общий календарь)
+    
+    Возвращает ВСЕ события общего календаря за период.
+    Если end_date не указан, возвращает события только на start_date (один день).
+    
+    Примеры использования:
+    - get_agenda("2026-01-10") - события на 10 января (один день)
+    - get_agenda("2026-01-10", "2026-01-15") - события с 10 по 15 января (период)
+    - Для "сегодня": используй дату из контекста запроса, например get_agenda("2026-01-11")
+    """
+    resolved_start = _require_iso_date("start_date", start_date)
+    
+    # Проверяем, что end_date передан и это строка (не FieldInfo)
+    if end_date is not None and isinstance(end_date, str):
+        resolved_end = _require_iso_date("end_date", end_date)
+    else:
+        resolved_end = resolved_start  # Если не указан, используем start_date (один день)
+    
+    return _get_agenda(resolved_start, resolved_end)
+
+
+def get_agenda_for_period(
+    start_date: str = Field(...),
+    end_date: str = Field(...),
+    telegram_id: Optional[int] = Field(default=None),
+) -> List[CalendarEvent]:
+    """
+    Получает список событий общего календаря за указанный период.
+    
+    УСТАРЕЛО: используйте get_agenda(start_date, end_date).
+    
+    Контракт ввода (строго):
+    - start_date: ISO "YYYY-MM-DD" (начало периода, включительно)
+    - end_date: ISO "YYYY-MM-DD" (конец периода, включительно)
+    - telegram_id: игнорируется (общий календарь)
+    
+    Возвращает ВСЕ события общего календаря за период.
+    
+    Args:
+        start_date: Начальная дата периода в формате ISO "YYYY-MM-DD"
+        end_date: Конечная дата периода в формате ISO "YYYY-MM-DD"
+        telegram_id: Игнорируется (общий календарь)
+    
+    Returns:
+        Список событий за период, отсортированный по времени
+    """
+    resolved_start = _require_iso_date("start_date", start_date)
+    resolved_end = _require_iso_date("end_date", end_date)
+    return _get_agenda(resolved_start, resolved_end)
+
+
 def get_today_agenda(
     telegram_id: Optional[int] = Field(default=None),
     target_date: Optional[str] = Field(default=None),
 ) -> List[CalendarEvent]:
     """
     Получает список событий на указанную дату для пользователя.
+    
+    УСТАРЕЛО: используйте get_agenda(start_date).
     
     Контракт ввода (строго):
     - target_date: ISO "YYYY-MM-DD" | None (None = сегодня)
@@ -256,33 +320,11 @@ def get_today_agenda(
         Список событий, отсортированный по времени
     """
     if target_date is None:
-        return _get_today_agenda(None)
-    resolved = _require_iso_date("target_date", target_date)
-    return _get_today_agenda(resolved)
-
-def get_agenda(
-    target_date: Optional[str] = Field(default=None),
-    telegram_id: Optional[int] = Field(default=None),
-) -> List[CalendarEvent]:
-    """
-    Тул для получения повестки общего календаря.
-    
-    Контракт ввода (строго):
-    - target_date: ISO "YYYY-MM-DD" | None (None = сегодня)
-    - telegram_id: игнорируется (общий календарь), автоматически берется из контекста если не передан
-    
-    Возвращает ВСЕ события общего календаря на дату.
-    """
-    resolved_date = None
-    if target_date is not None:
-        resolved_date = _require_iso_date("target_date", target_date)
-    else:
         current_dt_info = get_current_datetime()
         resolved_date = _require_iso_date("target_date", current_dt_info["date_iso"])
-    return _get_today_agenda(resolved_date)
-
-
-## В новой парадигме (общий календарь) личная/общая адженда не разделяются.
+    else:
+        resolved_date = _require_iso_date("target_date", target_date)
+    return _get_agenda(resolved_date, resolved_date)
 
 
 def update_event(

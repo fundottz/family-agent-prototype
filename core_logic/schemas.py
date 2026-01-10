@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from typing import Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 
 
@@ -24,19 +24,19 @@ class EventCategory(str, Enum):
 class User(BaseModel):
     """Модель пользователя."""
     id: Optional[int] = None
-    telegram_id: int
-    name: str
-    partner_telegram_id: Optional[int] = None
-    digest_time: str = "07:00"  # Формат "HH:MM"
+    telegram_id: int = Field(gt=0, description="Telegram ID должен быть положительным числом")
+    name: str = Field(min_length=1, description="Имя не может быть пустым")
+    partner_telegram_id: Optional[int] = Field(default=None, gt=0)
+    digest_time: str = Field(default="07:00", pattern=r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$', description="Формат HH:MM")
 
 
 class CalendarEvent(BaseModel):
     """Модель события календаря."""
     id: Optional[int] = None
-    title: str
+    title: str = Field(min_length=1, description="Название не может быть пустым")
     datetime: datetime
-    duration_minutes: int
-    creator_telegram_id: int
+    duration_minutes: int = Field(gt=0, description="Продолжительность должна быть положительным числом")
+    creator_telegram_id: int = Field(gt=0, description="Telegram ID создателя должен быть положительным числом")
     status: EventStatus = EventStatus.PROPOSED
     category: EventCategory
     created_at: Optional[datetime] = None

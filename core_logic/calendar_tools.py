@@ -187,11 +187,55 @@ def schedule_event(
         )
 
 
+def get_agenda(
+    start_date: date,
+    end_date: Optional[date] = None,
+) -> List[CalendarEvent]:
+    """
+    Получает список событий общего календаря за указанный период.
+    
+    Если end_date не указан, возвращает события только на start_date (один день).
+    
+    Args:
+        start_date: Начальная дата периода (включительно), обязательна
+        end_date: Конечная дата периода (включительно). Если None, то используется start_date (один день)
+    
+    Returns:
+        Список событий, отсортированный по времени
+    
+    Examples:
+        get_agenda(date(2026, 1, 10))  # Один день: 10 января
+        get_agenda(date(2026, 1, 10), date(2026, 1, 15))  # Период: с 10 по 15 января
+    """
+    if end_date is None:
+        end_date = start_date
+    
+    if start_date > end_date:
+        raise ValueError("start_date не может быть позже end_date")
+    
+    # Преобразуем date в datetime для начала и конца дня
+    start_datetime = DEFAULT_TIMEZONE.localize(
+        datetime.combine(start_date, datetime.min.time())
+    )
+    end_datetime = DEFAULT_TIMEZONE.localize(
+        datetime.combine(end_date, datetime.max.time())
+    )
+    
+    events = get_events_in_range(DB_FILE, start_datetime, end_datetime)
+    
+    # Сортируем по времени
+    events.sort(key=lambda e: e.datetime)
+    
+    return events
+
+
 def get_today_agenda(
     target_date: Optional[date] = None,
 ) -> List[CalendarEvent]:
     """
     Получает список событий на указанную дату для пользователя.
+    
+    УСТАРЕЛО: используйте get_agenda(date, date) или get_agenda(date).
     
     Возвращает ВСЕ события общего календаря на указанную дату.
     
@@ -204,20 +248,7 @@ def get_today_agenda(
     if target_date is None:
         target_date = date.today()
     
-    # Преобразуем date в datetime для начала и конца дня
-    start_datetime = DEFAULT_TIMEZONE.localize(
-        datetime.combine(target_date, datetime.min.time())
-    )
-    end_datetime = DEFAULT_TIMEZONE.localize(
-        datetime.combine(target_date, datetime.max.time())
-    )
-    
-    events = get_events_in_range(DB_FILE, start_datetime, end_datetime)
-    
-    # Сортируем по времени (уже отсортированы в БД, но на всякий случай)
-    events.sort(key=lambda e: e.datetime)
-    
-    return events
+    return get_agenda(target_date, target_date)
 
 
 def get_user_info(telegram_id: int) -> Optional[User]:
@@ -239,7 +270,7 @@ def get_joint_today_agenda(
     include: str = "both",
 ) -> List[CalendarEvent]:
     """
-    УСТАРЕЛО: общий календарь, используйте get_today_agenda().
+    УСТАРЕЛО: общий календарь, используйте get_agenda().
     
     Args:
         telegram_id: Telegram ID пользователя (текущего собеседника)
@@ -250,7 +281,9 @@ def get_joint_today_agenda(
     Returns:
         Список событий, отсортированный по времени
     """
-    return get_today_agenda(target_date)
+    if target_date is None:
+        target_date = date.today()
+    return get_agenda(target_date, target_date)
 
 
 def find_events_to_cancel(
