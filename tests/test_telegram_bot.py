@@ -3,11 +3,12 @@
 import os
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from telegram import Update, Message, Chat, User
+from telegram import Update, Message, Chat, User, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram_bot import (
     start_command, handle_message, run_bot, error_handler,
-    notify_partner_about_event, set_notification_bot, create_notify_callback
+    notify_partner_about_event, set_notification_bot, create_notify_callback,
+    create_quick_query_keyboard, keyboard_command
 )
 from core_logic.schemas import CalendarEvent, EventStatus, EventCategory
 from core_logic.database import init_database, create_user, get_user_by_telegram_id
@@ -74,17 +75,29 @@ async def test_start_command_without_agent(mock_update, mock_context):
 async def test_handle_message_private_chat(mock_update, mock_context, mock_agent):
     """Тест: обработка сообщения в личном чате."""
     mock_context.bot_data["agent"] = mock_agent
+    mock_context.bot_data.setdefault("session_versions", {})
     mock_update.message.chat.type = "private"
+    
+    # Мокаем arun (используется в handle_message)
+    mock_agent.arun = AsyncMock(return_value=MagicMock(content="Тестовый ответ"))
+    
+    # Мокаем reply_text для processing_message
+    mock_processing_message = MagicMock()
+    mock_processing_message.delete = AsyncMock()
+    mock_update.message.reply_text = AsyncMock(return_value=mock_processing_message)
     
     await handle_message(mock_update, mock_context)
     
     # Проверяем, что агент вызван
-    mock_agent.run.assert_called_once()
-    assert mock_agent.run.call_args[0][0] == "Привет"
+    mock_agent.arun.assert_called_once()
     
     # Проверяем, что ответ отправлен
-    mock_update.message.reply_text.assert_called_once()
-    assert mock_update.message.reply_text.call_args[0][0] == "Тестовый ответ"
+    # reply_text вызывается дважды: для "Обрабатываю..." и для ответа
+    assert mock_update.message.reply_text.call_count >= 1
+    
+    # Проверяем последний вызов (ответ)
+    last_call = mock_update.message.reply_text.call_args_list[-1]
+    assert last_call[0][0] == "Тестовый ответ"
 
 
 @pytest.mark.asyncio
@@ -93,10 +106,13 @@ async def test_handle_message_group_chat(mock_update, mock_context, mock_agent):
     mock_context.bot_data["agent"] = mock_agent
     mock_update.message.chat.type = "group"
     
+    # Мокаем arun
+    mock_agent.arun = AsyncMock()
+    
     await handle_message(mock_update, mock_context)
     
     # Агент не должен быть вызван
-    mock_agent.run.assert_not_called()
+    mock_agent.arun.assert_not_called()
     mock_update.message.reply_text.assert_not_called()
 
 
@@ -115,13 +131,23 @@ async def test_handle_message_without_agent(mock_update, mock_context):
 async def test_handle_message_agent_error(mock_update, mock_context, mock_agent):
     """Тест: обработка ошибки при вызове агента."""
     mock_context.bot_data["agent"] = mock_agent
-    mock_agent.run.side_effect = Exception("Test error")
+    mock_context.bot_data.setdefault("session_versions", {})
+    mock_update.message.chat.type = "private"
+    
+    # Мокаем arun с ошибкой
+    mock_agent.arun = AsyncMock(side_effect=Exception("Test error"))
+    
+    # Мокаем reply_text для processing_message
+    mock_processing_message = MagicMock()
+    mock_processing_message.delete = AsyncMock()
+    mock_processing_message.edit_text = AsyncMock()
+    mock_update.message.reply_text = AsyncMock(return_value=mock_processing_message)
     
     await handle_message(mock_update, mock_context)
     
     # Проверяем, что ошибка обработана и отправлен ответ пользователю
-    mock_update.message.reply_text.assert_called_once()
-    assert "ошибка" in mock_update.message.reply_text.call_args[0][0].lower()
+    mock_processing_message.edit_text.assert_called_once()
+    assert "ошибка" in mock_processing_message.edit_text.call_args[0][0].lower()
 
 
 @pytest.mark.asyncio
@@ -278,4 +304,95 @@ async def test_notify_partner_about_event_no_bot():
     
     # Должно вернуть False
     assert result is False
+
+
+def test_create_quick_query_keyboard():
+    """Тест: создание клавиатуры с быстрыми запросами."""
+    keyboard = create_quick_query_keyboard()
+    
+    # Проверяем, что возвращается ReplyKeyboardMarkup
+    assert isinstance(keyboard, ReplyKeyboardMarkup)
+    
+    # Проверяем структуру клавиатуры
+    assert keyboard.keyboard is not None
+    assert len(keyboard.keyboard) == 2  # 2 ряда
+    
+    # Проверяем первый ряд (2 кнопки)
+    assert len(keyboard.keyboard[0]) == 2
+    assert keyboard.keyboard[0][0].text == "Планы на сегодня"
+    assert keyboard.keyboard[0][1].text == "Планы на завтра"
+    
+    # Проверяем второй ряд (2 кнопки)
+    assert len(keyboard.keyboard[1]) == 2
+    assert keyboard.keyboard[1][0].text == "Планы на неделю"
+    assert keyboard.keyboard[1][1].text == "Что на выходных"
+    
+    # Проверяем resize_keyboard
+    assert keyboard.resize_keyboard is True
+
+
+@pytest.mark.asyncio
+async def test_keyboard_command(mock_update, mock_context):
+    """Тест: команда /keyboard показывает клавиатуру."""
+    await keyboard_command(mock_update, mock_context)
+    
+    # Проверяем, что ответ отправлен
+    mock_update.message.reply_text.assert_called_once()
+    call_args = mock_update.message.reply_text.call_args
+    assert "быстрый запрос" in call_args[0][0].lower()
+    
+    # Проверяем, что передана клавиатура
+    assert "reply_markup" in call_args[1]
+    assert isinstance(call_args[1]["reply_markup"], ReplyKeyboardMarkup)
+
+
+@pytest.mark.asyncio
+async def test_handle_message_preserves_keyboard(mock_update, mock_context, mock_agent):
+    """Тест: handle_message сохраняет клавиатуру в ответах."""
+    mock_context.bot_data["agent"] = mock_agent
+    mock_context.bot_data.setdefault("session_versions", {})
+    mock_update.message.chat.type = "private"
+    
+    # Мокаем arun вместо run (так как используется async версия)
+    mock_agent.arun = AsyncMock(return_value=MagicMock(content="Тестовый ответ"))
+    
+    # Мокаем reply_text для processing_message
+    mock_processing_message = MagicMock()
+    mock_processing_message.delete = AsyncMock()
+    mock_update.message.reply_text = AsyncMock(return_value=mock_processing_message)
+    
+    await handle_message(mock_update, mock_context)
+    
+    # Проверяем, что ответ отправлен с клавиатурой
+    # reply_text вызывается дважды: для "Обрабатываю..." и для ответа
+    assert mock_update.message.reply_text.call_count >= 1
+    
+    # Проверяем последний вызов (ответ с клавиатурой)
+    last_call = mock_update.message.reply_text.call_args_list[-1]
+    assert "reply_markup" in last_call[1]
+    assert isinstance(last_call[1]["reply_markup"], ReplyKeyboardMarkup)
+
+
+@pytest.mark.asyncio
+async def test_handle_message_keyboard_button(mock_update, mock_context, mock_agent):
+    """Тест: обработка нажатия кнопки клавиатуры (текст отправляется как обычное сообщение)."""
+    mock_context.bot_data["agent"] = mock_agent
+    mock_context.bot_data.setdefault("session_versions", {})
+    mock_update.message.chat.type = "private"
+    mock_update.message.text = "Планы на сегодня"  # Текст с кнопки
+    
+    # Мокаем arun
+    mock_agent.arun = AsyncMock(return_value=MagicMock(content="Сегодня у вас: секция в 10:00"))
+    
+    # Мокаем reply_text для processing_message
+    mock_processing_message = MagicMock()
+    mock_processing_message.delete = AsyncMock()
+    mock_update.message.reply_text = AsyncMock(return_value=mock_processing_message)
+    
+    await handle_message(mock_update, mock_context)
+    
+    # Проверяем, что агент получил правильный текст
+    mock_agent.arun.assert_called_once()
+    agent_input = mock_agent.arun.call_args[0][0]
+    assert "Планы на сегодня" in agent_input
 

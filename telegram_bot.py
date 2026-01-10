@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional, Any, Callable, List
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -27,6 +27,30 @@ logger = logging.getLogger(__name__)
 # Глобальная переменная для хранения bot instance для отправки уведомлений
 _notification_bot: Optional[Any] = None
 
+# Константы для текстов кнопок быстрых запросов
+QUICK_QUERY_BUTTONS = [
+    ["Планы на сегодня", "Планы на завтра"],
+    ["Планы на неделю", "Что на выходных"],
+]
+
+
+def create_quick_query_keyboard() -> ReplyKeyboardMarkup:
+    """
+    Создает клавиатуру с быстрыми запросами.
+    
+    Returns:
+        ReplyKeyboardMarkup с 4 кнопками в 2 ряда:
+        - "Планы на сегодня"
+        - "Планы на завтра"
+        - "Планы на неделю"
+        - "Что на выходных"
+    """
+    keyboard = [
+        [KeyboardButton(button_text) for button_text in row]
+        for row in QUICK_QUERY_BUTTONS
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start."""
@@ -37,7 +61,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     agent: Agent = context.bot_data.get("agent")
     
     if not agent:
-        await update.message.reply_text("❌ Ошибка: агент не инициализирован")
+        keyboard = create_quick_query_keyboard()
+        await update.message.reply_text("❌ Ошибка: агент не инициализирован", reply_markup=keyboard)
         return
     
     welcome_message = """Привет! Я твой семейный планировщик.
@@ -54,7 +79,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Или спроси:
 "Что у нас сегодня?" """
     
-    await update.message.reply_text(welcome_message)
+    keyboard = create_quick_query_keyboard()
+    await update.message.reply_text(welcome_message, reply_markup=keyboard)
+
+async def keyboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /keyboard - показывает клавиатуру с быстрыми запросами."""
+    if not update.message:
+        return
+    
+    keyboard = create_quick_query_keyboard()
+    await update.message.reply_text(
+        "Выбери быстрый запрос:",
+        reply_markup=keyboard
+    )
+
 
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Сбрасывает контекст диалога для пользователя (новая session_id версия)."""
@@ -82,15 +120,18 @@ async def handle_message(
     if update.message.chat.type != "private":
         return
     
+    # Создаем клавиатуру один раз для переиспользования во всех ответах
+    keyboard = create_quick_query_keyboard()
+    
     agent: Agent = context.bot_data.get("agent")
     
     if not agent:
-        await update.message.reply_text("❌ Ошибка: агент не инициализирован")
+        await update.message.reply_text("❌ Ошибка: агент не инициализирован", reply_markup=keyboard)
         return
     
     # Проверяем наличие текста сообщения
     if not update.message.text:
-        await update.message.reply_text("Извини, я понимаю только текстовые сообщения.")
+        await update.message.reply_text("Извини, я понимаю только текстовые сообщения.", reply_markup=keyboard)
         return
     
     user_message = update.message.text
@@ -132,18 +173,18 @@ async def handle_message(
         # Проверяем, что ответ получен
         if not response:
             logger.error("Агент вернул None")
-            await processing_message.edit_text("Извини, не получилось обработать запрос. Попробуй еще раз.")
+            await processing_message.edit_text("Извини, не получилось обработать запрос. Попробуй еще раз.", reply_markup=keyboard)
             return
         
         if not hasattr(response, 'content'):
             logger.error(f"Ответ не имеет атрибута content: {response}")
-            await processing_message.edit_text("Извини, не получилось обработать запрос. Попробуй еще раз.")
+            await processing_message.edit_text("Извини, не получилось обработать запрос. Попробуй еще раз.", reply_markup=keyboard)
             return
         
         # Проверяем, что контент не пустой
         if not response.content or not response.content.strip():
             logger.warning("Агент вернул пустой ответ")
-            await processing_message.edit_text("Извини, не получилось сформировать ответ. Попробуй переформулировать запрос.")
+            await processing_message.edit_text("Извини, не получилось сформировать ответ. Попробуй переформулировать запрос.", reply_markup=keyboard)
             return
         
         logger.info(f"Отправляю ответ пользователю: {response.content[:100]}...")
@@ -153,14 +194,14 @@ async def handle_message(
         except Exception:
             pass  # Игнорируем ошибки при удалении
         
-        # Отправляем ответ пользователю
-        await update.message.reply_text(response.content)
+        # Отправляем ответ пользователю с сохранением клавиатуры
+        await update.message.reply_text(response.content, reply_markup=keyboard)
         logger.info("Ответ успешно отправлен")
         
     except ValueError as e:
         # Ошибки валидации - показываем понятное сообщение
         logger.warning(f"Ошибка валидации: {e}")
-        await processing_message.edit_text(f"Извини, не могу обработать запрос: {str(e)}")
+        await processing_message.edit_text(f"Извини, не могу обработать запрос: {str(e)}", reply_markup=keyboard)
     except Exception as e:
         # Общие ошибки - логируем полностью, пользователю показываем безопасное сообщение
         logger.error(f"Ошибка при обработке сообщения: {e}", exc_info=True)
@@ -168,7 +209,8 @@ async def handle_message(
         await processing_message.edit_text(
             f"Извини, произошла ошибка при обработке запроса. "
             f"Попробуй еще раз или обратись к администратору. "
-            f"(Ошибка: {error_type})"
+            f"(Ошибка: {error_type})",
+            reply_markup=keyboard
         )
     finally:
         # Сбрасываем контекст tg id для текущей asyncio-задачи
@@ -496,6 +538,7 @@ def run_bot(agent: Agent) -> None:
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("reset", reset_command))
+    application.add_handler(CommandHandler("keyboard", keyboard_command))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
