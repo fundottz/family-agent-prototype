@@ -2,7 +2,7 @@
 
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Any, Callable, List
 from dotenv import load_dotenv
 from telegram import Update
@@ -118,13 +118,7 @@ async def handle_message(
         version = session_versions.get(telegram_user_id, 2)  # v2 отключает старую историю с просьбами ID
         session_id = f"telegram_{telegram_user_id}_v{version}"
 
-        # Усиливаем контекст против "попроси Telegram ID" из старой истории
-        context_prefix = (
-            "ВАЖНО: мой Telegram ID уже известен системе и доступен в контексте. "
-            "Никогда не проси Telegram ID. Если нужен ID для инструмента — не передавай его явно. "
-            "Для текущей даты используй get_current_datetime."
-        )
-        agent_input = f"{context_prefix}\n\nСообщение пользователя: {user_message}"
+        agent_input = f"Сообщение пользователя: {user_message}"
         
         logger.info(f"Вызываю agent.arun() для пользователя {user_id_str}, сессия {session_id}")
         response = await agent.arun(
@@ -223,7 +217,6 @@ async def notify_partner_about_event(
             logger.info(f"У пользователя {creator.name} нет партнера, уведомление не требуется")
             return False
         
-        # Формируем сообщение в спокойном тоне
         # Используем имя создателя
         creator_name = creator.name
         

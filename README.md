@@ -25,7 +25,9 @@ source venv/bin/activate  # или: venv\Scripts\activate на Windows
 pip install -r requirements.txt
 ```
 
-### 3. Запуск бота
+### 3. Запуск приложения
+
+#### Запуск Telegram бота
 
 ```bash
 # Простой способ (скрипт автоматически активирует venv)
@@ -38,11 +40,32 @@ python main.py
 
 Бот запустится и будет ожидать сообщения в Telegram.
 
+#### Запуск AgentOS
+
+AgentOS предоставляет REST API для взаимодействия с агентом:
+
+```bash
+# Простой способ (скрипт автоматически активирует venv)
+./run_agentos.sh
+
+# Или вручную:
+source test-env/bin/activate
+python agentos_app.py
+```
+
+После запуска AgentOS будет доступен по адресам:
+- **App Interface**: `http://localhost:7777` - Используйте этот URL для подключения к AgentOS control plane
+- **API Documentation**: `http://localhost:7777/docs` - Интерактивная документация API и тестирование
+- **Configuration**: `http://localhost:7777/config` - Просмотр конфигурации AgentOS
+
+Для подключения к AgentOS control plane используйте URL `http://localhost:7777`.
+
 ## Структура проекта
 
 ```
 family-agent-prototype/
-├── main.py                # Точка входа, конфигурация агента
+├── main.py                # Точка входа для Telegram бота, конфигурация агента
+├── agentos_app.py         # AgentOS приложение (REST API)
 ├── telegram_bot.py        # Telegram бот
 ├── core_logic/            # Чистая бизнес-логика (framework-agnostic)
 │   ├── __init__.py
@@ -55,6 +78,8 @@ family-agent-prototype/
 │   └── family_calendar.db # SQLite база данных (создается автоматически)
 ├── config/                # Конфигурационные файлы
 │   └── users.json         # Дефолтные пользователи (загружаются при первом запуске)
+├── run.sh                 # Скрипт запуска Telegram бота
+├── run_agentos.sh         # Скрипт запуска AgentOS
 └── requirements.txt       # Зависимости
 ```
 
