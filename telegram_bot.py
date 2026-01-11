@@ -18,6 +18,7 @@ from agents_wrappers import _set_current_telegram_id, _reset_current_telegram_id
 from core_logic.schemas import CalendarEvent
 from core_logic.database import get_user_by_telegram_id, mark_partner_notified
 from core_logic.calendar_tools import DB_FILE, set_notify_partner_callback, set_notify_partner_cancellation_callback, set_notify_partner_changes_callback
+from core_logic.memory_utils import get_user_and_family_info
 
 load_dotenv()
 
@@ -159,14 +160,60 @@ async def handle_message(
         version = session_versions.get(telegram_user_id, 2)  # v2 отключает старую историю с просьбами ID
         session_id = f"telegram_{telegram_user_id}_v{version}"
 
+        # Получаем информацию о пользователе и семье для Memory
+        user, family_id = get_user_and_family_info(DB_FILE, telegram_user_id)
+        
+        # Формируем agent_input с контекстом user_id и team_id
         agent_input = f"Сообщение пользователя: {user_message}"
+        if user and family_id:
+            agent_input += f"\nКонтекст: user_id={user_id_str}, team_id={family_id}"
+            logger.info(f"Memory контекст: user_id={user_id_str}, team_id={family_id}")
+        elif user:
+            agent_input += f"\nКонтекст: user_id={user_id_str}"
+            logger.info(f"Memory контекст: user_id={user_id_str} (без team_id)")
+        else:
+            logger.warning(f"Пользователь {telegram_user_id} не найден в БД, Memory не будет работать")
         
         logger.info(f"Вызываю agent.arun() для пользователя {user_id_str}, сессия {session_id}")
-        response = await agent.arun(
-            agent_input,
-            user_id=user_id_str,
-            session_id=session_id,
-        )
+        
+        # Пытаемся передать team_id в agent.arun(), если поддерживается
+        # Если не поддерживается, fallback через agent_input (уже добавлен выше)
+        response = None
+        try:
+            if user and family_id:
+                # Пробуем передать team_id как параметр (если поддерживается Agno)
+                response = await agent.arun(
+                    agent_input,
+                    user_id=user_id_str,
+                    session_id=session_id,
+                    team_id=family_id,
+                )
+            else:
+                response = await agent.arun(
+                    agent_input,
+                    user_id=user_id_str,
+                    session_id=session_id,
+                )
+        except TypeError:
+            # Если team_id не поддерживается как параметр, используем fallback
+            logger.debug("agent.arun() не поддерживает team_id как параметр, используем fallback через get_user_memories()")
+            if user and family_id:
+                try:
+                    # Получаем семейные memories и добавляем в agent_input (если метод доступен)
+                    if hasattr(agent, 'get_user_memories'):
+                        team_memories = await agent.get_user_memories(team_id=family_id)
+                        if team_memories:
+                            agent_input += f"\nСемейная память: {team_memories}"
+                            logger.debug(f"Добавлены семейные memories в контекст для team_id={family_id}")
+                except Exception as e:
+                    logger.warning(f"Не удалось получить семейные memories через get_user_memories(): {e}")
+                    # Продолжаем без memories, так как team_id уже в agent_input
+            
+            response = await agent.arun(
+                agent_input,
+                user_id=user_id_str,
+                session_id=session_id,
+            )
         
         logger.debug(f"Получен ответ от агента: {response}")
         

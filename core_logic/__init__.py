@@ -23,6 +23,11 @@ from .database import (
     add_event_participant,
 )
 
+from .memory_utils import (
+    get_family_id,
+    get_user_and_family_info,
+)
+
 __all__ = [
     # Schemas
     "User",
@@ -43,4 +48,7 @@ __all__ = [
     "get_event_by_id",
     "mark_partner_notified",
     "add_event_participant",
+    # Memory utilities
+    "get_family_id",
+    "get_user_and_family_info",
 ]
