@@ -28,5 +28,6 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 .cursor/mcp.json
+.cursor/debug.log
 
 family_calendar.db

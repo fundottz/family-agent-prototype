@@ -507,6 +507,7 @@ def cancel_events(
     end_date: Optional[str] = Field(default=None),
     category: Optional[str] = Field(default=None),
     title_filter: Optional[str] = Field(default=None),
+    time_filter: Optional[str] = Field(default=None),
     creator_telegram_id: Optional[int] = Field(default=None),
 ) -> CancelResult:
     """
@@ -518,6 +519,7 @@ def cancel_events(
     - end_date: ISO строка даты "YYYY-MM-DD" - конец диапазона (опционально)
     - category: фильтр по категории - одно из {'дети','дом','ремонт','личное'} (опционально)
     - title_filter: фильтр по названию события (частичное совпадение, опционально)
+    - time_filter: фильтр по времени в формате "HH:MM" или "HH-MM" (например, "15:30" или "15-30") (опционально)
     - creator_telegram_id: автоматически берется из контекста, не передавай явно
     
     Если передан event_ids, отменяются указанные события.
@@ -527,6 +529,7 @@ def cancel_events(
     - cancel_events(event_ids=[1, 2, 3]) - отменить конкретные события
     - cancel_events(start_date="2026-01-07", end_date="2026-01-15") - отменить все события за период
     - cancel_events(start_date="2026-01-07", end_date="2026-01-15", category="дети") - отменить события категории "дети" за период
+    - cancel_events(start_date="2026-01-11", end_date="2026-01-11", time_filter="15:30") - отменить событие на 11 января в 15:30
     
     Args:
         event_ids: Список ID событий для отмены
@@ -534,6 +537,7 @@ def cancel_events(
         end_date: Конец диапазона дат (ISO строка)
         category: Фильтр по категории
         title_filter: Фильтр по названию
+        time_filter: Фильтр по времени в формате "HH:MM" или "HH-MM"
         creator_telegram_id: Автоматически берется из контекста
     
     Returns:
@@ -563,13 +567,24 @@ def cancel_events(
                 except Exception:
                     raise ValueError("category должен быть одним из: 'дети', 'дом', 'ремонт', 'личное'.")
             
+            # Валидируем формат времени, если указан
+            if time_filter:
+                normalized_time = time_filter.replace("-", ":")
+                try:
+                    hour, minute = map(int, normalized_time.split(":"))
+                    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                        raise ValueError("time_filter должен быть в формате 'HH:MM' или 'HH-MM' с часами от 0 до 23 и минутами от 0 до 59")
+                except (ValueError, AttributeError) as e:
+                    raise ValueError(f"time_filter должен быть в формате 'HH:MM' или 'HH-MM': {e}")
+            
             # Находим события
             events = _find_events_to_cancel(
                 creator_telegram_id,
                 start_dt,
                 end_dt,
                 title_filter,
-                category_filter
+                category_filter,
+                time_filter
             )
             
             if not events:

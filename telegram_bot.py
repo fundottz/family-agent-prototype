@@ -310,10 +310,10 @@ async def notify_partner_about_event(
         creator_name = creator.name
         
         # Форматируем дату и время
-        event_datetime_str = _format_event_datetime(event.datetime)
+        event_datetime_str = _format_event_datetime(event)
         
         # Формируем сообщение
-        message = f"{creator_name} занял(а) {event_datetime_str}: {event.title}"
+        message = f"{creator_name} занял(а) {event.title} в {event_datetime_str}"
         
         # Отправляем сообщение партнеру
         try:
@@ -337,23 +337,28 @@ async def notify_partner_about_event(
         return False
 
 
-def _format_event_datetime(event_datetime: datetime) -> str:
+def _format_event_datetime(event: CalendarEvent) -> str:
     """
     Форматирует дату и время события для уведомлений.
     
     Args:
-        event_datetime: Дата и время события
+        event: Событие календаря
     
     Returns:
-        Строка вида "понедельник 10:00"
+        Строка вида "понедельник 10:00 - 12:00"
     """
     weekday_names = [
         "понедельник", "вторник", "среда", "четверг",
         "пятница", "суббота", "воскресенье"
     ]
-    weekday = weekday_names[event_datetime.weekday()]
-    time_str = event_datetime.strftime("%H:%M")
-    return f"{weekday} {time_str}"
+    weekday = weekday_names[event.datetime.weekday()]
+    start_time = event.datetime.strftime("%H:%M")
+    
+    # Вычисляем время окончания
+    end_datetime = event.datetime + timedelta(minutes=event.duration_minutes)
+    end_time = end_datetime.strftime("%H:%M")
+    
+    return f"{weekday} {start_time} - {end_time}"
 
 
 async def notify_partner_about_event_changes(
@@ -399,14 +404,14 @@ async def notify_partner_about_event_changes(
         if len(events) == 1:
             # Одно событие
             event = events[0]
-            event_datetime_str = _format_event_datetime(event.datetime)
-            message = f"{creator_name} {action} {event_datetime_str}: {event.title}"
+            event_datetime_str = _format_event_datetime(event)
+            message = f"{creator_name} {action} {event.title} в {event_datetime_str}"
         else:
             # Несколько событий
             event_list = []
             for event in events[:5]:  # Ограничиваем до 5 событий
-                event_datetime_str = _format_event_datetime(event.datetime)
-                event_list.append(f"{event_datetime_str}: {event.title}")
+                event_datetime_str = _format_event_datetime(event)
+                event_list.append(f"{event.title} в {event_datetime_str}")
             
             if len(events) > 5:
                 event_list.append(f"... и еще {len(events) - 5}")
@@ -462,6 +467,8 @@ def set_notification_bot(bot: Any) -> None:
     logger.info("Bot instance установлен для уведомлений")
 
 
+
+
 def create_notify_callback() -> Optional[Callable[[CalendarEvent, int], None]]:
     """
     Создает callback функцию для уведомления партнера.
@@ -469,13 +476,12 @@ def create_notify_callback() -> Optional[Callable[[CalendarEvent, int], None]]:
     
     Returns:
         Callback функция или None, если bot не установлен
-    """
-    import asyncio
-    
+"""
     def notify_callback(event: CalendarEvent, creator_telegram_id: int) -> None:
         """
         Синхронная обертка для async notify_partner_about_event.
         """
+        import asyncio
         try:
             # Проверяем, есть ли активный event loop
             try:
@@ -499,12 +505,11 @@ def create_notify_cancellation_callback() -> Optional[Callable[[List[CalendarEve
     Returns:
         Callback функция или None, если bot не установлен
     """
-    import asyncio
-    
     def notify_cancellation_callback(events: List[CalendarEvent], creator_telegram_id: int) -> None:
         """
         Синхронная обертка для async notify_partner_about_event_cancellation.
         """
+        import asyncio
         try:
             # Проверяем, есть ли активный event loop
             try:
@@ -528,12 +533,11 @@ def create_notify_changes_callback() -> Optional[Callable[[List[CalendarEvent], 
     Returns:
         Callback функция или None, если bot не установлен
     """
-    import asyncio
-    
     def notify_changes_callback(events: List[CalendarEvent], creator_telegram_id: int) -> None:
         """
         Синхронная обертка для async notify_partner_about_event_changes.
         """
+        import asyncio
         try:
             # Проверяем, есть ли активный event loop
             try:

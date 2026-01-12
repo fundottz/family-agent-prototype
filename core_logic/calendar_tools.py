@@ -292,6 +292,7 @@ def find_events_to_cancel(
     end_date: date,
     title_filter: Optional[str] = None,
     category_filter: Optional[EventCategory] = None,
+    time_filter: Optional[str] = None,
 ) -> List[CalendarEvent]:
     """
     Находит события для отмены по заданным критериям.
@@ -302,6 +303,7 @@ def find_events_to_cancel(
         end_date: Конечная дата диапазона (включительно)
         title_filter: Опциональный фильтр по названию (частичное совпадение)
         category_filter: Опциональный фильтр по категории
+        time_filter: Опциональный фильтр по времени в формате "HH:MM" или "HH-MM" (например, "15:30" или "15-30")
     
     Returns:
         Список событий, соответствующих критериям
@@ -319,6 +321,26 @@ def find_events_to_cancel(
         # Фильтр по названию
         if title_filter and title_filter.lower() not in event.title.lower():
             continue
+        
+        # Фильтр по времени
+        if time_filter:
+            # Нормализуем формат времени (заменяем "-" на ":")
+            normalized_time = time_filter.replace("-", ":")
+            # Парсим время события
+            event_time_str = event.datetime.strftime("%H:%M")
+            # Сравниваем время (с допуском ±5 минут для удобства)
+            try:
+                filter_hour, filter_minute = map(int, normalized_time.split(":"))
+                event_hour = event.datetime.hour
+                event_minute = event.datetime.minute
+                
+                # Проверяем точное совпадение или в пределах ±5 минут
+                time_diff_minutes = abs((event_hour * 60 + event_minute) - (filter_hour * 60 + filter_minute))
+                if time_diff_minutes > 5:
+                    continue
+            except (ValueError, AttributeError):
+                # Если не удалось распарсить время, пропускаем фильтр
+                pass
         
         filtered_events.append(event)
     
